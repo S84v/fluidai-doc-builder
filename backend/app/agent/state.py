@@ -1,6 +1,9 @@
 """Typed state for the document-generation agent graph."""
 
-from typing import Literal, TypedDict
+from typing import Annotated, Literal, TypedDict
+
+from langchain_core.messages import AnyMessage
+from langgraph.graph.message import add_messages
 
 from backend.app.agent.models import DocumentPlan
 
@@ -8,6 +11,7 @@ AgentStatus = Literal[
     "received",
     "understood",
     "planned",
+    "tool_selection",
     "completed",
     "rejected",
     "failed",
@@ -26,6 +30,9 @@ class AgentState(TypedDict, total=False):
     normalized_request: str
     plan: DocumentPlan | None
     planning_error: str
+    messages: Annotated[list[AnyMessage], add_messages]
+    tool_rounds: int
+    tool_error: str
     content: str
     validation_errors: list[str]
     revision_count: int
@@ -41,6 +48,9 @@ def create_initial_state(request: str) -> AgentState:
         "normalized_request": "",
         "plan": None,
         "planning_error": "",
+        "messages": [],
+        "tool_rounds": 0,
+        "tool_error": "",
         "content": "",
         "validation_errors": [],
         "revision_count": 0,

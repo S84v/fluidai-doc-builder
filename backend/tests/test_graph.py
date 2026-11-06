@@ -1,6 +1,7 @@
 """Offline tests for the LangGraph foundation and planning routing."""
 
 import pytest
+from langchain_core.messages import AIMessage, BaseMessage
 from langgraph.graph import StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
@@ -63,6 +64,25 @@ class EchoPlanner:
         return _plan(title=request)
 
 
+class FakeToolSelector:
+    """Return a deterministic no-tool model response."""
+
+    def __init__(
+        self,
+        response: AIMessage | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self._response = response or AIMessage(content="No tool was required.")
+        self._error = error
+        self.calls: list[list[BaseMessage]] = []
+
+    async def select(self, messages: list[BaseMessage]) -> AIMessage:
+        self.calls.append(list(messages))
+        if self._error is not None:
+            raise self._error
+        return self._response
+
+
 def test_graph_builds_and_compiles() -> None:
     graph = build_agent_graph()
     compiled = compile_agent_graph()
@@ -74,8 +94,13 @@ def test_graph_builds_and_compiles() -> None:
 async def test_valid_request_reaches_completed_state_with_plan() -> None:
     plan = _plan()
     planner = FakePlanner(plan=plan)
+    selector = FakeToolSelector()
 
-    result = await run_agent("  Create   a status report  ", planner=planner)
+    result = await run_agent(
+        "  Create   a status report  ",
+        planner=planner,
+        tool_selector=selector,
+    )
 
     assert result["status"] == "completed"
     assert result["normalized_request"] == "Create a status report"
@@ -83,7 +108,9 @@ async def test_valid_request_reaches_completed_state_with_plan() -> None:
     assert result["planning_error"] == ""
     assert result["validation_errors"] == []
     assert result["revision_count"] == 0
-    assert result["final_response"] == "Document plan created."
+    assert result["tool_rounds"] == 0
+    assert result["tool_error"] == ""
+    assert result["final_response"] == "No tool was required."
     assert planner.requests == ["Create a status report"]
 
 
@@ -157,20 +184,32 @@ async def test_missing_credentials_reach_safe_failure_state(
 
 
 async def test_state_is_isolated_between_invocations() -> None:
-    first = await run_agent("first request", planner=EchoPlanner())
-    second = await run_agent("second request", planner=EchoPlanner())
+    first = await run_agent(
+        "first request",
+        planner=EchoPlanner(),
+        tool_selector=FakeToolSelector(AIMessage(content="first answer")),
+    )
+    second = await run_agent(
+        "second request",
+        planner=EchoPlanner(),
+        tool_selector=FakeToolSelector(AIMessage(content="second answer")),
+    )
 
     assert first is not second
     assert first["plan"] is not None
     assert second["plan"] is not None
     assert first["plan"].title == "first request"
     assert second["plan"].title == "second request"
+    assert first["final_response"] == "first answer"
+    assert second["final_response"] == "second answer"
 
     first["plan"].title = "mutated"
     first["validation_errors"].append("mutated")
+    first["messages"].append(AIMessage(content="mutated"))
 
     assert second["plan"].title == "second request"
     assert second["validation_errors"] == []
+    assert len(second["messages"]) == 3
 
 
 def test_initial_state_uses_fresh_mutable_containers() -> None:
@@ -178,8 +217,11 @@ def test_initial_state_uses_fresh_mutable_containers() -> None:
     second = create_initial_state("second")
 
     first["validation_errors"].append("mutated")
+    first["messages"].append(AIMessage(content="mutated"))
 
     assert second["validation_errors"] == []
+    assert second["messages"] == []
     assert first["validation_errors"] is not second["validation_errors"]
+    assert first["messages"] is not second["messages"]
     assert first["plan"] is None
     assert second["plan"] is None
