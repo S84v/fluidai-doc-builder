@@ -23,6 +23,19 @@ AgentStatus = Literal[
     "failed",
 ]
 
+TerminalReason = Literal[
+    "completed",
+    "rejected",
+    "planning_failed",
+    "tool_failed",
+    "tool_limit_reached",
+    "content_failed",
+    "validation_failed",
+    "review_failed",
+    "revision_failed",
+    "docx_failed",
+]
+
 
 class AgentState(TypedDict, total=False):
     """State shared by the agent graph.
@@ -46,6 +59,7 @@ class AgentState(TypedDict, total=False):
     revision_count: int
     output_filename: str
     final_response: str
+    terminal_reason: TerminalReason | None
     status: AgentStatus
 
 
@@ -66,5 +80,6 @@ def create_initial_state(request: str) -> AgentState:
         "revision_count": 0,
         "output_filename": "",
         "final_response": "",
+        "terminal_reason": None,
         "status": "received",
     }

@@ -52,6 +52,19 @@ VALIDATION_FAILURE_RESPONSE = (
 )
 REVIEW_FAILURE_RESPONSE = "The document could not be reviewed. No file was generated."
 REVISION_FAILURE_RESPONSE = "The document could not be revised. No file was generated."
+GENERIC_FAILURE_RESPONSE = "The request could not be completed. Please try again."
+
+TERMINAL_MESSAGES = {
+    "rejected": REJECTION_RESPONSE,
+    "planning_failed": PLANNING_FAILURE_RESPONSE,
+    "tool_failed": TOOL_FAILURE_RESPONSE,
+    "tool_limit_reached": TOOL_LIMIT_RESPONSE,
+    "content_failed": DOCUMENT_FAILURE_RESPONSE,
+    "validation_failed": VALIDATION_FAILURE_RESPONSE,
+    "review_failed": REVIEW_FAILURE_RESPONSE,
+    "revision_failed": REVISION_FAILURE_RESPONSE,
+    "docx_failed": DOCUMENT_FAILURE_RESPONSE,
+}
 
 
 def prepare_request(state: AgentState) -> dict[str, Any]:
@@ -71,14 +84,12 @@ def prepare_request(state: AgentState) -> dict[str, Any]:
         return {
             "normalized_request": normalized_request,
             "validation_errors": errors,
-            "final_response": REJECTION_RESPONSE,
             "status": "rejected",
         }
 
     return {
         "normalized_request": normalized_request,
         "validation_errors": [],
-        "final_response": "",
         "status": "understood",
     }
 
@@ -175,7 +186,7 @@ def route_after_docx(
 def reject(state: AgentState) -> dict[str, Any]:
     """Terminate an invalid request without entering the pipeline."""
     return {
-        "final_response": REJECTION_RESPONSE,
+        "terminal_reason": "rejected",
         "status": "rejected",
     }
 
@@ -183,7 +194,7 @@ def reject(state: AgentState) -> dict[str, Any]:
 def planning_failed(state: AgentState) -> dict[str, Any]:
     """Terminate a request when planning could not produce a valid plan."""
     return {
-        "final_response": PLANNING_FAILURE_RESPONSE,
+        "terminal_reason": "planning_failed",
         "status": "failed",
     }
 
@@ -191,7 +202,7 @@ def planning_failed(state: AgentState) -> dict[str, Any]:
 def tool_failed(state: AgentState) -> dict[str, Any]:
     """Terminate a request when tool selection or execution fails safely."""
     return {
-        "final_response": TOOL_FAILURE_RESPONSE,
+        "terminal_reason": "tool_failed",
         "status": "failed",
     }
 
@@ -199,7 +210,7 @@ def tool_failed(state: AgentState) -> dict[str, Any]:
 def tool_limit_reached(state: AgentState) -> dict[str, Any]:
     """Terminate a request that exceeded the bounded tool execution limit."""
     return {
-        "final_response": TOOL_LIMIT_RESPONSE,
+        "terminal_reason": "tool_limit_reached",
         "status": "failed",
     }
 
@@ -207,7 +218,7 @@ def tool_limit_reached(state: AgentState) -> dict[str, Any]:
 def content_failed(state: AgentState) -> dict[str, Any]:
     """Terminate a request when structured content generation fails."""
     return {
-        "final_response": DOCUMENT_FAILURE_RESPONSE,
+        "terminal_reason": "content_failed",
         "status": "failed",
     }
 
@@ -215,7 +226,7 @@ def content_failed(state: AgentState) -> dict[str, Any]:
 def docx_failed(state: AgentState) -> dict[str, Any]:
     """Terminate a request when DOCX generation or verification fails."""
     return {
-        "final_response": DOCUMENT_FAILURE_RESPONSE,
+        "terminal_reason": "docx_failed",
         "status": "failed",
     }
 
@@ -223,7 +234,7 @@ def docx_failed(state: AgentState) -> dict[str, Any]:
 def validation_failed(state: AgentState) -> dict[str, Any]:
     """Terminate a request that still has blocking issues after revisions."""
     return {
-        "final_response": VALIDATION_FAILURE_RESPONSE,
+        "terminal_reason": "validation_failed",
         "status": "failed",
     }
 
@@ -231,7 +242,7 @@ def validation_failed(state: AgentState) -> dict[str, Any]:
 def review_failed(state: AgentState) -> dict[str, Any]:
     """Terminate a request when validation or LLM review fails."""
     return {
-        "final_response": REVIEW_FAILURE_RESPONSE,
+        "terminal_reason": "review_failed",
         "status": "failed",
     }
 
@@ -239,7 +250,7 @@ def review_failed(state: AgentState) -> dict[str, Any]:
 def revision_failed(state: AgentState) -> dict[str, Any]:
     """Terminate a request when a revision operation fails."""
     return {
-        "final_response": REVISION_FAILURE_RESPONSE,
+        "terminal_reason": "revision_failed",
         "status": "failed",
     }
 
@@ -249,12 +260,29 @@ def finalize(state: AgentState) -> dict[str, Any]:
     filename = state.get("output_filename")
     if not filename:
         return {
-            "final_response": DOCUMENT_FAILURE_RESPONSE,
+            "terminal_reason": "docx_failed",
             "status": "failed",
         }
     return {
-        "final_response": f"Document generated successfully: {filename}",
+        "terminal_reason": "completed",
         "status": "completed",
+    }
+
+
+def final_response(state: AgentState) -> dict[str, Any]:
+    """Produce the single deterministic user-facing response for any outcome."""
+    reason = state.get("terminal_reason")
+    if reason == "completed":
+        filename = state.get("output_filename", "")
+        if filename:
+            return {"final_response": f"Document generated successfully: {filename}"}
+        return {"final_response": GENERIC_FAILURE_RESPONSE}
+
+    return {
+        "final_response": TERMINAL_MESSAGES.get(
+            reason or "",
+            GENERIC_FAILURE_RESPONSE,
+        )
     }
 
 
@@ -484,6 +512,7 @@ def build_agent_graph(
     graph.add_node("review_failed", review_failed)
     graph.add_node("revision_failed", revision_failed)
     graph.add_node("docx_failed", docx_failed)
+    graph.add_node("final_response", final_response)
 
     graph.add_edge(START, "prepare_request")
     graph.add_conditional_edges(
@@ -547,16 +576,17 @@ def build_agent_graph(
             "docx_failed": "docx_failed",
         },
     )
-    graph.add_edge("finalize", END)
-    graph.add_edge("reject", END)
-    graph.add_edge("planning_failed", END)
-    graph.add_edge("tool_failed", END)
-    graph.add_edge("tool_limit_reached", END)
-    graph.add_edge("content_failed", END)
-    graph.add_edge("validation_failed", END)
-    graph.add_edge("review_failed", END)
-    graph.add_edge("revision_failed", END)
-    graph.add_edge("docx_failed", END)
+    graph.add_edge("finalize", "final_response")
+    graph.add_edge("reject", "final_response")
+    graph.add_edge("planning_failed", "final_response")
+    graph.add_edge("tool_failed", "final_response")
+    graph.add_edge("tool_limit_reached", "final_response")
+    graph.add_edge("content_failed", "final_response")
+    graph.add_edge("validation_failed", "final_response")
+    graph.add_edge("review_failed", "final_response")
+    graph.add_edge("revision_failed", "final_response")
+    graph.add_edge("docx_failed", "final_response")
+    graph.add_edge("final_response", END)
 
     return graph
 
