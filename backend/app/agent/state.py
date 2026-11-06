@@ -2,7 +2,16 @@
 
 from typing import Literal, TypedDict
 
-AgentStatus = Literal["received", "understood", "completed", "rejected"]
+from backend.app.agent.models import DocumentPlan
+
+AgentStatus = Literal[
+    "received",
+    "understood",
+    "planned",
+    "completed",
+    "rejected",
+    "failed",
+]
 
 
 class AgentState(TypedDict, total=False):
@@ -15,7 +24,8 @@ class AgentState(TypedDict, total=False):
 
     request: str
     normalized_request: str
-    plan: list[str]
+    plan: DocumentPlan | None
+    planning_error: str
     content: str
     validation_errors: list[str]
     revision_count: int
@@ -29,7 +39,8 @@ def create_initial_state(request: str) -> AgentState:
     return {
         "request": request,
         "normalized_request": "",
-        "plan": [],
+        "plan": None,
+        "planning_error": "",
         "content": "",
         "validation_errors": [],
         "revision_count": 0,
