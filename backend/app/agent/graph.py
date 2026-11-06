@@ -28,6 +28,12 @@ from backend.app.agent.tool_selection import (
     build_tool_selector,
 )
 from backend.app.agent.tools import AGENT_TOOLS, handle_tool_error
+from backend.app.agent.validation import (
+    MAX_REVISION_ATTEMPTS,
+    DocumentValidator,
+    ReviewError,
+    build_document_validator,
+)
 from backend.app.services.llm import MissingDeepSeekApiKeyError
 
 REJECTION_RESPONSE = "Request rejected: a non-empty request string is required."
@@ -41,6 +47,11 @@ TOOL_LIMIT_RESPONSE = (
     "The tool execution limit was reached before a final answer could be produced."
 )
 DOCUMENT_FAILURE_RESPONSE = "Unable to generate the document. Please try again."
+VALIDATION_FAILURE_RESPONSE = (
+    "The document did not pass validation. No file was generated."
+)
+REVIEW_FAILURE_RESPONSE = "The document could not be reviewed. No file was generated."
+REVISION_FAILURE_RESPONSE = "The document could not be revised. No file was generated."
 
 
 def prepare_request(state: AgentState) -> dict[str, Any]:
@@ -123,9 +134,35 @@ def route_after_selection(
 
 def route_after_writing(
     state: AgentState,
-) -> Literal["generate_docx", "content_failed"]:
+) -> Literal["validate_document", "content_failed"]:
     """Route based on whether validated content was produced."""
-    return "generate_docx" if state.get("content") is not None else "content_failed"
+    return "validate_document" if state.get("content") is not None else "content_failed"
+
+
+def route_after_validation(
+    state: AgentState,
+) -> Literal[
+    "generate_docx",
+    "revise_document",
+    "validation_failed",
+    "review_failed",
+]:
+    """Route passed documents, revisions, and exhausted or failed validation."""
+    report = state.get("validation_report")
+    if report is None:
+        return "review_failed"
+    if report.passed:
+        return "generate_docx"
+    if state.get("revision_count", 0) < MAX_REVISION_ATTEMPTS:
+        return "revise_document"
+    return "validation_failed"
+
+
+def route_after_revision(
+    state: AgentState,
+) -> Literal["validate_document", "revision_failed"]:
+    """Return successful revisions to validation and stop failed revisions."""
+    return "revision_failed" if state.get("status") == "failed" else "validate_document"
 
 
 def route_after_docx(
@@ -183,6 +220,30 @@ def docx_failed(state: AgentState) -> dict[str, Any]:
     }
 
 
+def validation_failed(state: AgentState) -> dict[str, Any]:
+    """Terminate a request that still has blocking issues after revisions."""
+    return {
+        "final_response": VALIDATION_FAILURE_RESPONSE,
+        "status": "failed",
+    }
+
+
+def review_failed(state: AgentState) -> dict[str, Any]:
+    """Terminate a request when validation or LLM review fails."""
+    return {
+        "final_response": REVIEW_FAILURE_RESPONSE,
+        "status": "failed",
+    }
+
+
+def revision_failed(state: AgentState) -> dict[str, Any]:
+    """Terminate a request when a revision operation fails."""
+    return {
+        "final_response": REVISION_FAILURE_RESPONSE,
+        "status": "failed",
+    }
+
+
 def finalize(state: AgentState) -> dict[str, Any]:
     """Complete the request only after a verified DOCX file exists."""
     filename = state.get("output_filename")
@@ -203,6 +264,7 @@ def build_agent_graph(
     writer: DocumentWriter | None = None,
     docx_generator: DocxGenerator | None = None,
     output_dir: Path | str | None = None,
+    validator: DocumentValidator | None = None,
 ) -> StateGraph:
     """Build the explicit graph without compiling it.
 
@@ -292,6 +354,81 @@ def build_agent_graph(
             "status": "writing",
         }
 
+    async def validate_document(state: AgentState) -> dict[str, Any]:
+        plan = state.get("plan")
+        content = state.get("content")
+        if plan is None or content is None:
+            return {
+                "validation_report": None,
+                "document_error": "A plan and content are required for validation.",
+                "status": "failed",
+            }
+
+        try:
+            active_validator = validator or build_document_validator()
+            report = await active_validator.validate(
+                state.get("normalized_request", ""),
+                plan,
+                content,
+                _extract_tool_results(state.get("messages", [])),
+            )
+        except (ReviewError, MissingDeepSeekApiKeyError) as exc:
+            return {
+                "validation_report": None,
+                "document_error": str(exc),
+                "status": "failed",
+            }
+        except Exception:
+            return {
+                "validation_report": None,
+                "document_error": "The document could not be validated.",
+                "status": "failed",
+            }
+
+        return {
+            "validation_report": report,
+            "document_error": "",
+            "status": "validating",
+        }
+
+    async def revise_document(state: AgentState) -> dict[str, Any]:
+        plan = state.get("plan")
+        content = state.get("content")
+        report = state.get("validation_report")
+        if plan is None or content is None or report is None:
+            return {
+                "document_error": (
+                    "Revision requires a plan, content and validation report."
+                ),
+                "status": "failed",
+            }
+
+        attempt = state.get("revision_count", 0) + 1
+
+        try:
+            active_writer = writer or build_document_writer()
+            revised = await active_writer.revise(
+                state.get("normalized_request", ""),
+                plan,
+                content,
+                report.blocking_issues,
+                _extract_tool_results(state.get("messages", [])),
+            )
+        except (ContentGenerationError, MissingDeepSeekApiKeyError) as exc:
+            return {
+                "document_error": str(exc),
+                "revision_count": attempt,
+                "status": "failed",
+            }
+
+        return {
+            "content": revised,
+            "validation_report": None,
+            "document_error": "",
+            "revision_count": attempt,
+            "status": "revising",
+        }
+
     async def generate_docx(state: AgentState) -> dict[str, Any]:
         content = state.get("content")
         if content is None:
@@ -334,6 +471,8 @@ def build_agent_graph(
         ToolNode(AGENT_TOOLS, handle_tool_errors=handle_tool_error),
     )
     graph.add_node("write_document", write_document)
+    graph.add_node("validate_document", validate_document)
+    graph.add_node("revise_document", revise_document)
     graph.add_node("generate_docx", generate_docx)
     graph.add_node("finalize", finalize)
     graph.add_node("reject", reject)
@@ -341,6 +480,9 @@ def build_agent_graph(
     graph.add_node("tool_failed", tool_failed)
     graph.add_node("tool_limit_reached", tool_limit_reached)
     graph.add_node("content_failed", content_failed)
+    graph.add_node("validation_failed", validation_failed)
+    graph.add_node("review_failed", review_failed)
+    graph.add_node("revision_failed", revision_failed)
     graph.add_node("docx_failed", docx_failed)
 
     graph.add_edge(START, "prepare_request")
@@ -375,8 +517,26 @@ def build_agent_graph(
         "write_document",
         route_after_writing,
         {
-            "generate_docx": "generate_docx",
+            "validate_document": "validate_document",
             "content_failed": "content_failed",
+        },
+    )
+    graph.add_conditional_edges(
+        "validate_document",
+        route_after_validation,
+        {
+            "generate_docx": "generate_docx",
+            "revise_document": "revise_document",
+            "validation_failed": "validation_failed",
+            "review_failed": "review_failed",
+        },
+    )
+    graph.add_conditional_edges(
+        "revise_document",
+        route_after_revision,
+        {
+            "validate_document": "validate_document",
+            "revision_failed": "revision_failed",
         },
     )
     graph.add_conditional_edges(
@@ -393,6 +553,9 @@ def build_agent_graph(
     graph.add_edge("tool_failed", END)
     graph.add_edge("tool_limit_reached", END)
     graph.add_edge("content_failed", END)
+    graph.add_edge("validation_failed", END)
+    graph.add_edge("review_failed", END)
+    graph.add_edge("revision_failed", END)
     graph.add_edge("docx_failed", END)
 
     return graph
@@ -404,6 +567,7 @@ def compile_agent_graph(
     writer: DocumentWriter | None = None,
     docx_generator: DocxGenerator | None = None,
     output_dir: Path | str | None = None,
+    validator: DocumentValidator | None = None,
 ) -> CompiledStateGraph:
     """Compile a fresh graph for one invocation."""
     return build_agent_graph(
@@ -412,6 +576,7 @@ def compile_agent_graph(
         writer,
         docx_generator,
         output_dir,
+        validator,
     ).compile()
 
 
@@ -423,6 +588,7 @@ async def run_agent(
     writer: DocumentWriter | None = None,
     docx_generator: DocxGenerator | None = None,
     output_dir: Path | str | None = None,
+    validator: DocumentValidator | None = None,
 ) -> AgentState:
     """Run one isolated graph invocation for a request."""
     graph = compile_agent_graph(
@@ -431,5 +597,6 @@ async def run_agent(
         writer,
         docx_generator,
         output_dir,
+        validator,
     )
     return await graph.ainvoke(create_initial_state(request))

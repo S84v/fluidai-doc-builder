@@ -8,6 +8,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
 from backend.app.agent.document_content import DocumentContent
 from backend.app.agent.models import DocumentPlan
+from backend.app.agent.validation import ValidationIssue
 from backend.app.services.llm import build_chat_model
 
 _CONTENT_SCHEMA = json.dumps(DocumentContent.model_json_schema(), indent=2)
@@ -35,6 +36,24 @@ Rules:
 - Leave optional structured fields empty when they are not supported by known
   facts; do not duplicate structured table data as bullets.
 - Do not include internal reasoning, tool calls, or meta commentary.
+"""
+
+REVISION_SYSTEM_PROMPT = f"""You revise a structured business document to resolve
+blocking validation issues.
+
+Return only a JSON object matching this schema:
+{_CONTENT_SCHEMA}
+
+Rules:
+- Address every blocking issue and its suggested correction.
+- Preserve the approved document type, section headings and section order.
+- Preserve supported facts and valid existing content; make targeted edits
+  rather than rewriting the whole document unnecessarily.
+- Never invent names, dates, figures, commitments, technical specifications, or
+  other business facts.
+- Use explicit bracketed placeholders for information that is still unknown.
+- Keep assumptions distinguishable from confirmed facts.
+- Do not introduce internal reasoning, tool calls, or meta commentary.
 """
 
 
@@ -69,6 +88,45 @@ def build_writing_messages(
 
 class ContentGenerationError(RuntimeError):
     """Raised when valid document content cannot be produced."""
+
+
+def _format_validation_issues(issues: Sequence[ValidationIssue]) -> str:
+    if not issues:
+        return "- None provided."
+    lines = []
+    for issue in issues:
+        line = f"- [{issue.code}] {issue.message}"
+        if issue.section:
+            line += f" (section: {issue.section})"
+        if issue.suggestion:
+            line += f" Suggested correction: {issue.suggestion}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def build_revision_messages(
+    request: str,
+    plan: DocumentPlan,
+    content: DocumentContent,
+    blocking_issues: Sequence[ValidationIssue],
+    tool_results: Sequence[str],
+) -> list[BaseMessage]:
+    """Build targeted revision messages from blocking validation feedback."""
+    return [
+        SystemMessage(content=REVISION_SYSTEM_PROMPT),
+        HumanMessage(
+            content=(
+                f"Original request:\n{request}\n\n"
+                f"Approved plan:\n{plan.model_dump_json(indent=2)}\n\n"
+                f"Current content:\n{content.model_dump_json(indent=2)}\n\n"
+                f"Blocking issues:\n"
+                f"{_format_validation_issues(blocking_issues)}\n\n"
+                f"Confirmed facts:\n{_format_items(plan.provided_facts)}\n\n"
+                f"Assumptions:\n{_format_items(plan.assumptions)}\n\n"
+                f"Tool results:\n{_format_items(tool_results)}"
+            )
+        ),
+    ]
 
 
 class DocumentWriter:
@@ -111,6 +169,47 @@ class DocumentWriter:
 
         _validate_content_against_plan(content, plan)
         return content
+
+    async def revise(
+        self,
+        request: str,
+        plan: DocumentPlan,
+        content: DocumentContent,
+        blocking_issues: Sequence[ValidationIssue],
+        tool_results: Sequence[str] = (),
+    ) -> DocumentContent:
+        if not blocking_issues:
+            raise ContentGenerationError(
+                "No blocking issues were supplied for revision."
+            )
+
+        try:
+            result = await self._structured_model.ainvoke(
+                build_revision_messages(
+                    request,
+                    plan,
+                    content,
+                    blocking_issues,
+                    tool_results,
+                )
+            )
+        except Exception as exc:
+            raise ContentGenerationError(
+                "The writing model could not revise the document."
+            ) from exc
+
+        if isinstance(result, DocumentContent):
+            revised = result
+        else:
+            try:
+                revised = DocumentContent.model_validate(result)
+            except Exception as exc:
+                raise ContentGenerationError(
+                    "The writing model returned invalid revised content."
+                ) from exc
+
+        _validate_content_against_plan(revised, plan)
+        return revised
 
 
 def _normalize_heading(heading: str) -> str:

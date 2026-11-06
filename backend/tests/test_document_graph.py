@@ -71,6 +71,7 @@ class FailingDocxGenerator:
 async def test_tool_results_reach_writer_without_reasoning(
     fake_writer: Any,
     fake_docx_generator: Any,
+    fake_validator: Any,
 ) -> None:
     selector = FakeToolSelector(
         [
@@ -96,6 +97,7 @@ async def test_tool_results_reach_writer_without_reasoning(
         tool_selector=selector,
         writer=fake_writer,
         docx_generator=fake_docx_generator,
+        validator=fake_validator,
     )
 
     assert result["status"] == "completed"
@@ -108,6 +110,7 @@ async def test_tool_results_reach_writer_without_reasoning(
 async def test_real_docx_is_created_after_writing(
     tmp_path: Path,
     fake_writer: Any,
+    fake_validator: Any,
 ) -> None:
     result = await run_agent(
         "Create a status report",
@@ -115,6 +118,7 @@ async def test_real_docx_is_created_after_writing(
         tool_selector=NoToolSelector(),
         writer=fake_writer,
         docx_generator=DocxGenerator(tmp_path),
+        validator=fake_validator,
     )
 
     assert result["status"] == "completed"
@@ -145,6 +149,7 @@ async def test_content_generation_failure_routes_to_safe_failure() -> None:
 
 async def test_docx_generation_failure_routes_to_safe_failure(
     fake_writer: Any,
+    fake_validator: Any,
 ) -> None:
     result = await run_agent(
         "Create a status report",
@@ -152,6 +157,7 @@ async def test_docx_generation_failure_routes_to_safe_failure(
         tool_selector=NoToolSelector(),
         writer=fake_writer,
         docx_generator=FailingDocxGenerator(),
+        validator=fake_validator,
     )
 
     assert result["status"] == "failed"
@@ -166,6 +172,7 @@ async def test_docx_generation_failure_routes_to_safe_failure(
 async def test_filesystem_failure_routes_to_safe_failure(
     tmp_path: Path,
     fake_writer: Any,
+    fake_validator: Any,
 ) -> None:
     blocked_path = tmp_path / "not-a-directory"
     blocked_path.write_text("blocked", encoding="utf-8")
@@ -176,6 +183,7 @@ async def test_filesystem_failure_routes_to_safe_failure(
         tool_selector=NoToolSelector(),
         writer=fake_writer,
         output_dir=blocked_path,
+        validator=fake_validator,
     )
 
     assert result["status"] == "failed"
@@ -186,6 +194,7 @@ async def test_filesystem_failure_routes_to_safe_failure(
 async def test_document_state_is_request_local(
     fake_writer: Any,
     fake_docx_generator: Any,
+    fake_validator: Any,
 ) -> None:
     first = await run_agent(
         "Create the first report",
@@ -193,6 +202,7 @@ async def test_document_state_is_request_local(
         tool_selector=NoToolSelector(),
         writer=fake_writer,
         docx_generator=fake_docx_generator,
+        validator=fake_validator,
     )
     second = await run_agent(
         "Create the second report",
@@ -200,6 +210,7 @@ async def test_document_state_is_request_local(
         tool_selector=NoToolSelector(),
         writer=fake_writer,
         docx_generator=fake_docx_generator,
+        validator=fake_validator,
     )
 
     assert first["content"] is not second["content"]
@@ -213,6 +224,7 @@ async def test_document_state_is_request_local(
 
 async def test_tool_message_content_only_is_extracted(
     fake_docx_generator: Any,
+    fake_validator: Any,
 ) -> None:
     selector = FakeToolSelector(
         [
@@ -262,6 +274,7 @@ async def test_tool_message_content_only_is_extracted(
         tool_selector=selector,
         writer=writer,
         docx_generator=fake_docx_generator,
+        validator=fake_validator,
     )
 
     assert result["status"] == "completed"

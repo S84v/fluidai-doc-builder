@@ -7,6 +7,7 @@ from langgraph.graph.message import add_messages
 
 from backend.app.agent.document_content import DocumentContent
 from backend.app.agent.models import DocumentPlan
+from backend.app.agent.validation import ValidationReport
 
 AgentStatus = Literal[
     "received",
@@ -14,6 +15,8 @@ AgentStatus = Literal[
     "planned",
     "tool_selection",
     "writing",
+    "validating",
+    "revising",
     "docx_generation",
     "completed",
     "rejected",
@@ -38,6 +41,7 @@ class AgentState(TypedDict, total=False):
     tool_error: str
     content: DocumentContent | None
     document_error: str
+    validation_report: ValidationReport | None
     validation_errors: list[str]
     revision_count: int
     output_filename: str
@@ -57,6 +61,7 @@ def create_initial_state(request: str) -> AgentState:
         "tool_error": "",
         "content": None,
         "document_error": "",
+        "validation_report": None,
         "validation_errors": [],
         "revision_count": 0,
         "output_filename": "",

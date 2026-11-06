@@ -54,6 +54,7 @@ class StaticPlanner:
 async def test_live_calculator_tool_round_trip(
     fake_writer: Any,
     fake_docx_generator: Any,
+    fake_validator: Any,
 ) -> None:
     settings = Settings()
     if not settings.deepseek_api_key:
@@ -69,6 +70,7 @@ async def test_live_calculator_tool_round_trip(
             tool_selector=selector,
             writer=fake_writer,
             docx_generator=fake_docx_generator,
+            validator=fake_validator,
         )
     except Exception as exc:
         pytest.fail(f"Live tool round trip failed with {type(exc).__name__}")

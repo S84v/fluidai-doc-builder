@@ -87,6 +87,7 @@ def _tool_response(
 async def test_tool_request_executes_and_result_returns_to_model(
     fake_writer: Any,
     fake_docx_generator: Any,
+    fake_validator: Any,
 ) -> None:
     selector = FakeToolSelector(
         [
@@ -105,6 +106,7 @@ async def test_tool_request_executes_and_result_returns_to_model(
         tool_selector=selector,
         writer=fake_writer,
         docx_generator=fake_docx_generator,
+        validator=fake_validator,
     )
 
     assert result["status"] == "completed"
@@ -136,6 +138,7 @@ async def test_tool_request_executes_and_result_returns_to_model(
 async def test_no_tool_needed_skips_tool_execution(
     fake_writer: Any,
     fake_docx_generator: Any,
+    fake_validator: Any,
 ) -> None:
     selector = FakeToolSelector([AIMessage(content="No tool is needed.")])
 
@@ -145,6 +148,7 @@ async def test_no_tool_needed_skips_tool_execution(
         tool_selector=selector,
         writer=fake_writer,
         docx_generator=fake_docx_generator,
+        validator=fake_validator,
     )
 
     assert result["status"] == "completed"
@@ -157,6 +161,7 @@ async def test_no_tool_needed_skips_tool_execution(
 async def test_multiple_tool_rounds_are_supported(
     fake_writer: Any,
     fake_docx_generator: Any,
+    fake_validator: Any,
 ) -> None:
     selector = FakeToolSelector(
         [
@@ -172,6 +177,7 @@ async def test_multiple_tool_rounds_are_supported(
         tool_selector=selector,
         writer=fake_writer,
         docx_generator=fake_docx_generator,
+        validator=fake_validator,
     )
 
     assert result["status"] == "completed"
@@ -239,6 +245,7 @@ async def test_empty_model_response_reaches_safe_failure_state() -> None:
 async def test_tool_error_is_returned_to_model(
     fake_writer: Any,
     fake_docx_generator: Any,
+    fake_validator: Any,
 ) -> None:
     selector = FakeToolSelector(
         [
@@ -253,6 +260,7 @@ async def test_tool_error_is_returned_to_model(
         tool_selector=selector,
         writer=fake_writer,
         docx_generator=fake_docx_generator,
+        validator=fake_validator,
     )
 
     assert result["status"] == "completed"
@@ -266,6 +274,7 @@ async def test_tool_error_is_returned_to_model(
 async def test_invalid_tool_arguments_are_handled(
     fake_writer: Any,
     fake_docx_generator: Any,
+    fake_validator: Any,
 ) -> None:
     invalid_call = AIMessage(
         content="",
@@ -291,6 +300,7 @@ async def test_invalid_tool_arguments_are_handled(
         tool_selector=selector,
         writer=fake_writer,
         docx_generator=fake_docx_generator,
+        validator=fake_validator,
     )
 
     assert result["status"] == "completed"
@@ -303,6 +313,7 @@ async def test_invalid_tool_arguments_are_handled(
 async def test_tool_messages_are_request_local(
     fake_writer: Any,
     fake_docx_generator: Any,
+    fake_validator: Any,
 ) -> None:
     first_selector = FakeToolSelector(
         [
@@ -318,6 +329,7 @@ async def test_tool_messages_are_request_local(
         tool_selector=first_selector,
         writer=fake_writer,
         docx_generator=fake_docx_generator,
+        validator=fake_validator,
     )
     second = await run_agent(
         "No calculation.",
@@ -325,6 +337,7 @@ async def test_tool_messages_are_request_local(
         tool_selector=second_selector,
         writer=fake_writer,
         docx_generator=fake_docx_generator,
+        validator=fake_validator,
     )
 
     assert first["messages"] is not second["messages"]
@@ -351,6 +364,7 @@ async def test_planning_failure_still_rejects_before_tools() -> None:
 async def test_initial_messages_are_system_and_human(
     fake_writer: Any,
     fake_docx_generator: Any,
+    fake_validator: Any,
 ) -> None:
     selector = FakeToolSelector([AIMessage(content="No tool needed.")])
 
@@ -360,6 +374,7 @@ async def test_initial_messages_are_system_and_human(
         tool_selector=selector,
         writer=fake_writer,
         docx_generator=fake_docx_generator,
+        validator=fake_validator,
     )
 
     assert len(selector.calls[0]) == 2

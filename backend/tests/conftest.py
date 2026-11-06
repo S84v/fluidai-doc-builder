@@ -6,6 +6,7 @@ from backend.app.agent import (
     ContentSection,
     DocumentContent,
     DocumentPlan,
+    ValidationReport,
 )
 
 
@@ -64,6 +65,26 @@ class StaticDocxGenerator:
         return self._filename
 
 
+class StaticValidator:
+    """Validator double that returns preconfigured reports."""
+
+    def __init__(self, reports: list[ValidationReport] | None = None) -> None:
+        self._reports = list(reports or [])
+        self.calls: list[tuple[DocumentContent, DocumentPlan]] = []
+
+    async def validate(
+        self,
+        request: str,
+        plan: DocumentPlan,
+        content: DocumentContent,
+        tool_results: list[str] | tuple[str, ...] = (),
+    ) -> ValidationReport:
+        self.calls.append((content, plan))
+        if self._reports:
+            return self._reports.pop(0)
+        return ValidationReport()
+
+
 @pytest.fixture
 def fake_writer() -> StaticWriter:
     return StaticWriter()
@@ -72,3 +93,8 @@ def fake_writer() -> StaticWriter:
 @pytest.fixture
 def fake_docx_generator() -> StaticDocxGenerator:
     return StaticDocxGenerator()
+
+
+@pytest.fixture
+def fake_validator() -> StaticValidator:
+    return StaticValidator()

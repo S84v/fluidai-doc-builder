@@ -96,6 +96,7 @@ def test_graph_builds_and_compiles() -> None:
 async def test_valid_request_reaches_completed_state_with_plan(
     fake_writer: Any,
     fake_docx_generator: Any,
+    fake_validator: Any,
 ) -> None:
     plan = _plan()
     planner = FakePlanner(plan=plan)
@@ -107,6 +108,7 @@ async def test_valid_request_reaches_completed_state_with_plan(
         tool_selector=selector,
         writer=fake_writer,
         docx_generator=fake_docx_generator,
+        validator=fake_validator,
     )
 
     assert result["status"] == "completed"
@@ -200,6 +202,7 @@ async def test_missing_credentials_reach_safe_failure_state(
 async def test_state_is_isolated_between_invocations(
     fake_writer: Any,
     fake_docx_generator: Any,
+    fake_validator: Any,
 ) -> None:
     first = await run_agent(
         "first request",
@@ -207,6 +210,7 @@ async def test_state_is_isolated_between_invocations(
         tool_selector=FakeToolSelector(AIMessage(content="first answer")),
         writer=fake_writer,
         docx_generator=fake_docx_generator,
+        validator=fake_validator,
     )
     second = await run_agent(
         "second request",
@@ -214,6 +218,7 @@ async def test_state_is_isolated_between_invocations(
         tool_selector=FakeToolSelector(AIMessage(content="second answer")),
         writer=fake_writer,
         docx_generator=fake_docx_generator,
+        validator=fake_validator,
     )
 
     assert first is not second
