@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     deepseek_api_key: str | None = None
     deepseek_model: str = "deepseek-flash"
     deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_reasoning_effort: str = "low"
 
 
 @lru_cache
