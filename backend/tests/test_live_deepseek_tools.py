@@ -10,6 +10,7 @@ rounds requested by the model). It never prints credentials or reasoning text.
 """
 
 import os
+from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
@@ -50,7 +51,10 @@ class StaticPlanner:
         )
 
 
-async def test_live_calculator_tool_round_trip() -> None:
+async def test_live_calculator_tool_round_trip(
+    fake_writer: Any,
+    fake_docx_generator: Any,
+) -> None:
     settings = Settings()
     if not settings.deepseek_api_key:
         pytest.skip("Inconclusive: DEEPSEEK_API_KEY is not configured")
@@ -63,6 +67,8 @@ async def test_live_calculator_tool_round_trip() -> None:
             "Use the calculator tool to compute 17 * 23. Report the numeric result.",
             planner=StaticPlanner(),
             tool_selector=selector,
+            writer=fake_writer,
+            docx_generator=fake_docx_generator,
         )
     except Exception as exc:
         pytest.fail(f"Live tool round trip failed with {type(exc).__name__}")

@@ -1,12 +1,19 @@
-"""LangGraph workflow with planning and bounded tool execution."""
+"""LangGraph workflow with planning, tool execution, and DOCX generation."""
 
+from pathlib import Path
 from typing import Any, Literal
 
-from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode
 
+from backend.app.agent.document_writer import (
+    ContentGenerationError,
+    DocumentWriter,
+    build_document_writer,
+)
+from backend.app.agent.docx_generator import DocxGenerationError, DocxGenerator
 from backend.app.agent.planning import (
     DocumentPlanner,
     PlanningError,
@@ -33,6 +40,7 @@ TOOL_FAILURE_RESPONSE = (
 TOOL_LIMIT_RESPONSE = (
     "The tool execution limit was reached before a final answer could be produced."
 )
+DOCUMENT_FAILURE_RESPONSE = "Unable to generate the document. Please try again."
 
 
 def prepare_request(state: AgentState) -> dict[str, Any]:
@@ -83,10 +91,19 @@ def _last_ai_message(messages: list[BaseMessage]) -> AIMessage | None:
     return None
 
 
+def _extract_tool_results(messages: list[BaseMessage]) -> list[str]:
+    """Collect tool-result text only; never model reasoning or tool calls."""
+    return [
+        message.content
+        for message in messages
+        if isinstance(message, ToolMessage) and isinstance(message.content, str)
+    ]
+
+
 def route_after_selection(
     state: AgentState,
-) -> Literal["tools", "finalize", "tool_failed", "tool_limit_reached"]:
-    """Route the latest model response to tools, success, or safe failure."""
+) -> Literal["tools", "write_document", "tool_failed", "tool_limit_reached"]:
+    """Route the latest model response to tools, writing, or safe failure."""
     if state.get("status") == "failed":
         return "tool_failed"
 
@@ -101,21 +118,21 @@ def route_after_selection(
 
     if not last_message.text.strip():
         return "tool_failed"
-    return "finalize"
+    return "write_document"
 
 
-def finalize(state: AgentState) -> dict[str, Any]:
-    """Complete the request with the model's final tool-assisted answer."""
-    last_message = _last_ai_message(state.get("messages", []))
-    if last_message is None or not last_message.text.strip():
-        return {
-            "final_response": TOOL_FAILURE_RESPONSE,
-            "status": "failed",
-        }
-    return {
-        "final_response": last_message.text,
-        "status": "completed",
-    }
+def route_after_writing(
+    state: AgentState,
+) -> Literal["generate_docx", "content_failed"]:
+    """Route based on whether validated content was produced."""
+    return "generate_docx" if state.get("content") is not None else "content_failed"
+
+
+def route_after_docx(
+    state: AgentState,
+) -> Literal["finalize", "docx_failed"]:
+    """Route based on whether a verified DOCX file was produced."""
+    return "finalize" if state.get("output_filename") else "docx_failed"
 
 
 def reject(state: AgentState) -> dict[str, Any]:
@@ -150,15 +167,47 @@ def tool_limit_reached(state: AgentState) -> dict[str, Any]:
     }
 
 
+def content_failed(state: AgentState) -> dict[str, Any]:
+    """Terminate a request when structured content generation fails."""
+    return {
+        "final_response": DOCUMENT_FAILURE_RESPONSE,
+        "status": "failed",
+    }
+
+
+def docx_failed(state: AgentState) -> dict[str, Any]:
+    """Terminate a request when DOCX generation or verification fails."""
+    return {
+        "final_response": DOCUMENT_FAILURE_RESPONSE,
+        "status": "failed",
+    }
+
+
+def finalize(state: AgentState) -> dict[str, Any]:
+    """Complete the request only after a verified DOCX file exists."""
+    filename = state.get("output_filename")
+    if not filename:
+        return {
+            "final_response": DOCUMENT_FAILURE_RESPONSE,
+            "status": "failed",
+        }
+    return {
+        "final_response": f"Document generated successfully: {filename}",
+        "status": "completed",
+    }
+
+
 def build_agent_graph(
     planner: DocumentPlanner | None = None,
     tool_selector: ToolSelector | None = None,
+    writer: DocumentWriter | None = None,
+    docx_generator: DocxGenerator | None = None,
+    output_dir: Path | str | None = None,
 ) -> StateGraph:
     """Build the explicit graph without compiling it.
 
-    ``planner`` and ``tool_selector`` may be injected for offline tests. When
-    omitted, the real implementations and model are constructed lazily inside
-    their graph nodes.
+    Dependencies may be injected for offline tests and isolated output
+    directories. Real implementations and models are constructed lazily.
     """
 
     async def plan_document(state: AgentState) -> dict[str, Any]:
@@ -214,6 +263,67 @@ def build_agent_graph(
             update["tool_rounds"] = state.get("tool_rounds", 0) + 1
         return update
 
+    async def write_document(state: AgentState) -> dict[str, Any]:
+        plan = state.get("plan")
+        if plan is None:
+            return {
+                "content": None,
+                "document_error": "A document plan is required before writing.",
+                "status": "failed",
+            }
+
+        try:
+            active_writer = writer or build_document_writer()
+            content = await active_writer.generate(
+                state.get("normalized_request", ""),
+                plan,
+                _extract_tool_results(state.get("messages", [])),
+            )
+        except (ContentGenerationError, MissingDeepSeekApiKeyError) as exc:
+            return {
+                "content": None,
+                "document_error": str(exc),
+                "status": "failed",
+            }
+
+        return {
+            "content": content,
+            "document_error": "",
+            "status": "writing",
+        }
+
+    async def generate_docx(state: AgentState) -> dict[str, Any]:
+        content = state.get("content")
+        if content is None:
+            return {
+                "output_filename": "",
+                "document_error": (
+                    "Validated content is required before DOCX generation."
+                ),
+                "status": "failed",
+            }
+
+        try:
+            active_generator = docx_generator or (
+                DocxGenerator(output_dir) if output_dir is not None else DocxGenerator()
+            )
+            filename = active_generator.generate(
+                content,
+                state.get("normalized_request", ""),
+            )
+        except (DocxGenerationError, OSError) as exc:
+            return {
+                "output_filename": "",
+                "document_error": str(exc),
+                "status": "failed",
+            }
+
+        return {
+            "output_filename": filename,
+            "document_error": "",
+            "status": "docx_generation",
+        }
+
     graph = StateGraph(AgentState)
 
     graph.add_node("prepare_request", prepare_request)
@@ -223,11 +333,15 @@ def build_agent_graph(
         "tools",
         ToolNode(AGENT_TOOLS, handle_tool_errors=handle_tool_error),
     )
+    graph.add_node("write_document", write_document)
+    graph.add_node("generate_docx", generate_docx)
     graph.add_node("finalize", finalize)
     graph.add_node("reject", reject)
     graph.add_node("planning_failed", planning_failed)
     graph.add_node("tool_failed", tool_failed)
     graph.add_node("tool_limit_reached", tool_limit_reached)
+    graph.add_node("content_failed", content_failed)
+    graph.add_node("docx_failed", docx_failed)
 
     graph.add_edge(START, "prepare_request")
     graph.add_conditional_edges(
@@ -251,17 +365,35 @@ def build_agent_graph(
         route_after_selection,
         {
             "tools": "tools",
-            "finalize": "finalize",
+            "write_document": "write_document",
             "tool_failed": "tool_failed",
             "tool_limit_reached": "tool_limit_reached",
         },
     )
     graph.add_edge("tools", "select_tools")
+    graph.add_conditional_edges(
+        "write_document",
+        route_after_writing,
+        {
+            "generate_docx": "generate_docx",
+            "content_failed": "content_failed",
+        },
+    )
+    graph.add_conditional_edges(
+        "generate_docx",
+        route_after_docx,
+        {
+            "finalize": "finalize",
+            "docx_failed": "docx_failed",
+        },
+    )
     graph.add_edge("finalize", END)
     graph.add_edge("reject", END)
     graph.add_edge("planning_failed", END)
     graph.add_edge("tool_failed", END)
     graph.add_edge("tool_limit_reached", END)
+    graph.add_edge("content_failed", END)
+    graph.add_edge("docx_failed", END)
 
     return graph
 
@@ -269,9 +401,18 @@ def build_agent_graph(
 def compile_agent_graph(
     planner: DocumentPlanner | None = None,
     tool_selector: ToolSelector | None = None,
+    writer: DocumentWriter | None = None,
+    docx_generator: DocxGenerator | None = None,
+    output_dir: Path | str | None = None,
 ) -> CompiledStateGraph:
     """Compile a fresh graph for one invocation."""
-    return build_agent_graph(planner, tool_selector).compile()
+    return build_agent_graph(
+        planner,
+        tool_selector,
+        writer,
+        docx_generator,
+        output_dir,
+    ).compile()
 
 
 async def run_agent(
@@ -279,7 +420,16 @@ async def run_agent(
     *,
     planner: DocumentPlanner | None = None,
     tool_selector: ToolSelector | None = None,
+    writer: DocumentWriter | None = None,
+    docx_generator: DocxGenerator | None = None,
+    output_dir: Path | str | None = None,
 ) -> AgentState:
     """Run one isolated graph invocation for a request."""
-    graph = compile_agent_graph(planner, tool_selector)
+    graph = compile_agent_graph(
+        planner,
+        tool_selector,
+        writer,
+        docx_generator,
+        output_dir,
+    )
     return await graph.ainvoke(create_initial_state(request))

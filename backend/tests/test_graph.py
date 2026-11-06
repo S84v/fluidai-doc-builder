@@ -1,5 +1,7 @@
 """Offline tests for the LangGraph foundation and planning routing."""
 
+from typing import Any
+
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage
 from langgraph.graph import StateGraph
@@ -91,7 +93,10 @@ def test_graph_builds_and_compiles() -> None:
     assert isinstance(compiled, CompiledStateGraph)
 
 
-async def test_valid_request_reaches_completed_state_with_plan() -> None:
+async def test_valid_request_reaches_completed_state_with_plan(
+    fake_writer: Any,
+    fake_docx_generator: Any,
+) -> None:
     plan = _plan()
     planner = FakePlanner(plan=plan)
     selector = FakeToolSelector()
@@ -100,18 +105,27 @@ async def test_valid_request_reaches_completed_state_with_plan() -> None:
         "  Create   a status report  ",
         planner=planner,
         tool_selector=selector,
+        writer=fake_writer,
+        docx_generator=fake_docx_generator,
     )
 
     assert result["status"] == "completed"
     assert result["normalized_request"] == "Create a status report"
     assert result["plan"] == plan
+    assert result["content"] is not None
     assert result["planning_error"] == ""
+    assert result["document_error"] == ""
     assert result["validation_errors"] == []
     assert result["revision_count"] == 0
     assert result["tool_rounds"] == 0
     assert result["tool_error"] == ""
-    assert result["final_response"] == "No tool was required."
+    assert result["output_filename"] == "test-document-000000000000.docx"
+    assert result["final_response"] == (
+        "Document generated successfully: test-document-000000000000.docx"
+    )
     assert planner.requests == ["Create a status report"]
+    assert fake_writer.calls[0][2] == []
+    assert len(fake_docx_generator.calls) == 1
 
 
 async def test_empty_request_is_routed_to_rejection_without_planning() -> None:
@@ -183,16 +197,23 @@ async def test_missing_credentials_reach_safe_failure_state(
     )
 
 
-async def test_state_is_isolated_between_invocations() -> None:
+async def test_state_is_isolated_between_invocations(
+    fake_writer: Any,
+    fake_docx_generator: Any,
+) -> None:
     first = await run_agent(
         "first request",
         planner=EchoPlanner(),
         tool_selector=FakeToolSelector(AIMessage(content="first answer")),
+        writer=fake_writer,
+        docx_generator=fake_docx_generator,
     )
     second = await run_agent(
         "second request",
         planner=EchoPlanner(),
         tool_selector=FakeToolSelector(AIMessage(content="second answer")),
+        writer=fake_writer,
+        docx_generator=fake_docx_generator,
     )
 
     assert first is not second
@@ -200,8 +221,9 @@ async def test_state_is_isolated_between_invocations() -> None:
     assert second["plan"] is not None
     assert first["plan"].title == "first request"
     assert second["plan"].title == "second request"
-    assert first["final_response"] == "first answer"
-    assert second["final_response"] == "second answer"
+    assert first["content"] is not None
+    assert second["content"] is not None
+    assert first["content"] is not second["content"]
 
     first["plan"].title = "mutated"
     first["validation_errors"].append("mutated")
@@ -223,5 +245,8 @@ def test_initial_state_uses_fresh_mutable_containers() -> None:
     assert second["messages"] == []
     assert first["validation_errors"] is not second["validation_errors"]
     assert first["messages"] is not second["messages"]
+    assert first["content"] is None
+    assert second["content"] is None
+    assert first["document_error"] == ""
     assert first["plan"] is None
     assert second["plan"] is None

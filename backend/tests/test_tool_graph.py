@@ -84,7 +84,10 @@ def _tool_response(
     )
 
 
-async def test_tool_request_executes_and_result_returns_to_model() -> None:
+async def test_tool_request_executes_and_result_returns_to_model(
+    fake_writer: Any,
+    fake_docx_generator: Any,
+) -> None:
     selector = FakeToolSelector(
         [
             _tool_response(
@@ -100,10 +103,13 @@ async def test_tool_request_executes_and_result_returns_to_model() -> None:
         "What is 17 * 23?",
         planner=FakePlanner(),
         tool_selector=selector,
+        writer=fake_writer,
+        docx_generator=fake_docx_generator,
     )
 
     assert result["status"] == "completed"
-    assert result["final_response"] == "17 * 23 = 391."
+    assert result["final_response"].startswith("Document generated successfully:")
+    assert result["output_filename"] == "test-document-000000000000.docx"
     assert result["tool_rounds"] == 1
     assert len(selector.calls) == 2
 
@@ -127,23 +133,31 @@ async def test_tool_request_executes_and_result_returns_to_model() -> None:
     assert first_ai.additional_kwargs["reasoning_content"] == "Use the calculator."
 
 
-async def test_no_tool_needed_skips_tool_execution() -> None:
+async def test_no_tool_needed_skips_tool_execution(
+    fake_writer: Any,
+    fake_docx_generator: Any,
+) -> None:
     selector = FakeToolSelector([AIMessage(content="No tool is needed.")])
 
     result = await run_agent(
         "Summarise the plan.",
         planner=FakePlanner(),
         tool_selector=selector,
+        writer=fake_writer,
+        docx_generator=fake_docx_generator,
     )
 
     assert result["status"] == "completed"
-    assert result["final_response"] == "No tool is needed."
+    assert result["final_response"].startswith("Document generated successfully:")
     assert result["tool_rounds"] == 0
     assert not any(isinstance(message, ToolMessage) for message in result["messages"])
     assert len(selector.calls) == 1
 
 
-async def test_multiple_tool_rounds_are_supported() -> None:
+async def test_multiple_tool_rounds_are_supported(
+    fake_writer: Any,
+    fake_docx_generator: Any,
+) -> None:
     selector = FakeToolSelector(
         [
             _tool_response("1 + 1", "call_1"),
@@ -156,6 +170,8 @@ async def test_multiple_tool_rounds_are_supported() -> None:
         "Calculate 1 + 1 and 2 + 2.",
         planner=FakePlanner(),
         tool_selector=selector,
+        writer=fake_writer,
+        docx_generator=fake_docx_generator,
     )
 
     assert result["status"] == "completed"
@@ -220,7 +236,10 @@ async def test_empty_model_response_reaches_safe_failure_state() -> None:
     assert result["final_response"] == TOOL_FAILURE_RESPONSE
 
 
-async def test_tool_error_is_returned_to_model() -> None:
+async def test_tool_error_is_returned_to_model(
+    fake_writer: Any,
+    fake_docx_generator: Any,
+) -> None:
     selector = FakeToolSelector(
         [
             _tool_response("1 / 0", "call_1"),
@@ -232,6 +251,8 @@ async def test_tool_error_is_returned_to_model() -> None:
         "Calculate 1 / 0.",
         planner=FakePlanner(),
         tool_selector=selector,
+        writer=fake_writer,
+        docx_generator=fake_docx_generator,
     )
 
     assert result["status"] == "completed"
@@ -242,7 +263,10 @@ async def test_tool_error_is_returned_to_model() -> None:
     assert "division by zero" in selector.calls[1][-1].content
 
 
-async def test_invalid_tool_arguments_are_handled() -> None:
+async def test_invalid_tool_arguments_are_handled(
+    fake_writer: Any,
+    fake_docx_generator: Any,
+) -> None:
     invalid_call = AIMessage(
         content="",
         tool_calls=[
@@ -265,6 +289,8 @@ async def test_invalid_tool_arguments_are_handled() -> None:
         "Calculate something.",
         planner=FakePlanner(),
         tool_selector=selector,
+        writer=fake_writer,
+        docx_generator=fake_docx_generator,
     )
 
     assert result["status"] == "completed"
@@ -274,7 +300,10 @@ async def test_invalid_tool_arguments_are_handled() -> None:
     assert "invalid arguments" in tool_message.content
 
 
-async def test_tool_messages_are_request_local() -> None:
+async def test_tool_messages_are_request_local(
+    fake_writer: Any,
+    fake_docx_generator: Any,
+) -> None:
     first_selector = FakeToolSelector(
         [
             _tool_response("1 + 1", "call_1"),
@@ -287,11 +316,15 @@ async def test_tool_messages_are_request_local() -> None:
         "Calculate 1 + 1.",
         planner=FakePlanner(),
         tool_selector=first_selector,
+        writer=fake_writer,
+        docx_generator=fake_docx_generator,
     )
     second = await run_agent(
         "No calculation.",
         planner=FakePlanner(),
         tool_selector=second_selector,
+        writer=fake_writer,
+        docx_generator=fake_docx_generator,
     )
 
     assert first["messages"] is not second["messages"]
@@ -315,13 +348,18 @@ async def test_planning_failure_still_rejects_before_tools() -> None:
     assert selector.calls == []
 
 
-async def test_initial_messages_are_system_and_human() -> None:
+async def test_initial_messages_are_system_and_human(
+    fake_writer: Any,
+    fake_docx_generator: Any,
+) -> None:
     selector = FakeToolSelector([AIMessage(content="No tool needed.")])
 
     await run_agent(
         "What is 17 * 23?",
         planner=FakePlanner(),
         tool_selector=selector,
+        writer=fake_writer,
+        docx_generator=fake_docx_generator,
     )
 
     assert len(selector.calls[0]) == 2

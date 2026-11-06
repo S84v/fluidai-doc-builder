@@ -1,0 +1,74 @@
+"""Shared deterministic fakes for graph tests."""
+
+import pytest
+
+from backend.app.agent import (
+    ContentSection,
+    DocumentContent,
+    DocumentPlan,
+)
+
+
+class StaticWriter:
+    """Writer double that mirrors the approved plan structure."""
+
+    def __init__(
+        self,
+        content: DocumentContent | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self._content = content
+        self._error = error
+        self.calls: list[tuple[str, DocumentPlan, list[str]]] = []
+
+    async def generate(
+        self,
+        request: str,
+        plan: DocumentPlan,
+        tool_results: list[str] | tuple[str, ...] = (),
+    ) -> DocumentContent:
+        self.calls.append((request, plan, list(tool_results)))
+        if self._error is not None:
+            raise self._error
+        if self._content is not None:
+            return self._content
+        return DocumentContent(
+            document_type=plan.document_type,
+            title=plan.title,
+            sections=[
+                ContentSection(
+                    heading=section.heading,
+                    paragraphs=["Generated placeholder content."],
+                )
+                for section in plan.sections
+            ],
+        )
+
+
+class StaticDocxGenerator:
+    """DOCX double that records calls without touching the filesystem."""
+
+    def __init__(
+        self,
+        filename: str = "test-document-000000000000.docx",
+        error: Exception | None = None,
+    ) -> None:
+        self._filename = filename
+        self._error = error
+        self.calls: list[tuple[DocumentContent, str]] = []
+
+    def generate(self, content: DocumentContent, request: str) -> str:
+        self.calls.append((content, request))
+        if self._error is not None:
+            raise self._error
+        return self._filename
+
+
+@pytest.fixture
+def fake_writer() -> StaticWriter:
+    return StaticWriter()
+
+
+@pytest.fixture
+def fake_docx_generator() -> StaticDocxGenerator:
+    return StaticDocxGenerator()

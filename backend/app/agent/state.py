@@ -5,6 +5,7 @@ from typing import Annotated, Literal, TypedDict
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 
+from backend.app.agent.document_content import DocumentContent
 from backend.app.agent.models import DocumentPlan
 
 AgentStatus = Literal[
@@ -12,6 +13,8 @@ AgentStatus = Literal[
     "understood",
     "planned",
     "tool_selection",
+    "writing",
+    "docx_generation",
     "completed",
     "rejected",
     "failed",
@@ -33,7 +36,8 @@ class AgentState(TypedDict, total=False):
     messages: Annotated[list[AnyMessage], add_messages]
     tool_rounds: int
     tool_error: str
-    content: str
+    content: DocumentContent | None
+    document_error: str
     validation_errors: list[str]
     revision_count: int
     output_filename: str
@@ -51,7 +55,8 @@ def create_initial_state(request: str) -> AgentState:
         "messages": [],
         "tool_rounds": 0,
         "tool_error": "",
-        "content": "",
+        "content": None,
+        "document_error": "",
         "validation_errors": [],
         "revision_count": 0,
         "output_filename": "",
