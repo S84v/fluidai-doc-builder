@@ -1,14 +1,26 @@
 """Tests for the SSE agent endpoint and secure document download."""
 
 import asyncio
+import io
 import json
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+from docx import Document
 from langchain_core.messages import AIMessage
 
+from backend.app.agent import (
+    ActionItem,
+    ContentSection,
+    DocumentContent,
+    DocumentValidator,
+    DocxGenerator,
+    MeetingDetails,
+    PlanningError,
+    ReviewOutput,
+)
 from backend.app.agent.graph import (
     DOCUMENT_FAILURE_RESPONSE,
     PLANNING_FAILURE_RESPONSE,
@@ -434,6 +446,165 @@ async def test_real_graph_streams_through_sse(
     assert token["text"] == (
         "Document generated successfully: test-document-000000000000.docx"
     )
+
+
+class _NoIssueReviewer:
+    async def review(
+        self,
+        request: str,
+        plan: DocumentPlan,
+        content: DocumentContent,
+        tool_results: list[str] | tuple[str, ...] = (),
+    ) -> ReviewOutput:
+        return ReviewOutput()
+
+
+class _StaticPlanner:
+    def __init__(self, plan: DocumentPlan, error: Exception | None = None) -> None:
+        self.plan = plan
+        self.error = error
+
+    async def create_plan(self, request: str) -> DocumentPlan:
+        if self.error is not None:
+            raise self.error
+        return self.plan
+
+
+class _NoToolSelector:
+    async def select(self, messages: Any) -> AIMessage:
+        return AIMessage(content="No tool needed.")
+
+
+class _StaticWriter:
+    def __init__(self, content: DocumentContent) -> None:
+        self.content = content
+
+    async def generate(
+        self,
+        request: str,
+        plan: DocumentPlan,
+        tool_results: list[str] | tuple[str, ...] = (),
+    ) -> DocumentContent:
+        return self.content
+
+    async def revise(
+        self,
+        request: str,
+        plan: DocumentPlan,
+        content: DocumentContent,
+        blocking_issues: Any,
+        tool_results: list[str] | tuple[str, ...] = (),
+    ) -> DocumentContent:
+        return self.content
+
+
+def _meeting_plan_and_content() -> tuple[DocumentPlan, DocumentContent]:
+    headings = ("Agenda", "Decisions", "Action Items")
+    plan = DocumentPlan(
+        document_type=DocumentType.MEETING_MINUTES,
+        title="Atlas Kickoff Minutes",
+        objective="Record the kickoff meeting.",
+        sections=[
+            PlanSection(heading=heading, purpose=f"Purpose of {heading}.")
+            for heading in headings
+        ],
+    )
+    content = DocumentContent(
+        document_type=DocumentType.MEETING_MINUTES,
+        title=plan.title,
+        meeting=MeetingDetails(
+            date="2026-11-06",
+            attendees=["Anna", "Ben"],
+        ),
+        action_items=[ActionItem(action="Send notes", status="Open")],
+        sections=[
+            ContentSection(heading=heading, paragraphs=[f"{heading} content."])
+            for heading in headings
+        ],
+    )
+    return plan, content
+
+
+async def test_actual_graph_end_to_end_sse_and_download(tmp_path: Path) -> None:
+    plan, content = _meeting_plan_and_content()
+
+    def factory() -> Any:
+        return compile_agent_graph(
+            planner=_StaticPlanner(plan),
+            tool_selector=_NoToolSelector(),
+            writer=_StaticWriter(content),
+            docx_generator=DocxGenerator(tmp_path),
+            validator=DocumentValidator(_NoIssueReviewer()),
+        )
+
+    app = create_app(_settings(), graph_factory=factory, output_dir=tmp_path)
+
+    async with _client(app) as client:
+        response = await client.post("/agent", json={"request": "Create minutes"})
+        events = _parse_sse(response.text)
+        complete = next(data for event, data in events if event == "complete")
+        download = await client.get(complete["url"])
+
+    assert response.status_code == 200
+    assert download.status_code == 200
+    assert download.headers["content-type"] == DOCX_MEDIA_TYPE
+    assert SENSITIVE_SENTINEL not in response.text
+
+    progress = [data["message"] for event, data in events if event == "progress"]
+    assert progress.index("Understanding request...") < progress.index(
+        "Planning document..."
+    )
+    assert progress.index("Planning document...") < progress.index(
+        "Writing document..."
+    )
+    assert progress.index("Writing document...") < progress.index(
+        "Validating document..."
+    )
+    assert progress.index("Validating document...") < progress.index(
+        "Generating DOCX document..."
+    )
+
+    document = Document(io.BytesIO(download.content))
+    assert document.paragraphs[0].text == content.title
+    assert any(
+        row.cells[0].text == "Date" for table in document.tables for row in table.rows
+    )
+    assert any(
+        row.cells[0].text == "Action" for table in document.tables for row in table.rows
+    )
+
+
+async def test_actual_graph_terminal_failure_emits_error_not_complete(
+    tmp_path: Path,
+) -> None:
+    def factory() -> Any:
+        return compile_agent_graph(
+            planner=_StaticPlanner(
+                DocumentPlan(
+                    document_type=DocumentType.BUSINESS_REPORT,
+                    title="Report",
+                    objective="Report.",
+                    sections=[PlanSection(heading="Overview", purpose="Overview.")],
+                ),
+                error=PlanningError("planning failed"),
+            ),
+            tool_selector=_NoToolSelector(),
+            writer=_StaticWriter(_meeting_plan_and_content()[1]),
+            docx_generator=DocxGenerator(tmp_path),
+            validator=DocumentValidator(_NoIssueReviewer()),
+        )
+
+    app = create_app(_settings(), graph_factory=factory, output_dir=tmp_path)
+
+    async with _client(app) as client:
+        response = await client.post("/agent", json={"request": "Create a report"})
+
+    events = _parse_sse(response.text)
+    event_names = [event for event, _ in events]
+    assert "complete" not in event_names
+    assert "token" not in event_names
+    assert event_names[-1] == "error"
+    assert events[-1][1]["message"] == PLANNING_FAILURE_RESPONSE
 
 
 async def test_health_endpoint_contract_is_preserved() -> None:

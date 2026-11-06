@@ -43,12 +43,24 @@ Settings are loaded from the environment or a local `.env` file:
 | `DEEPSEEK_API_KEY` | unset | no |
 | `DEEPSEEK_MODEL` | `deepseek-flash` | no |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | no |
+| `DEEPSEEK_REASONING_EFFORT` | `low` | no |
 
 ## API
 
 - `GET /health` — service health.
-- `POST /agent` — planned.
-- `GET /documents/{filename}` — planned.
+- `POST /agent` — accepts `{"request": "..."}` and returns SSE progress,
+  final-response token and completion/error events.
+- `GET /documents/{filename}` — downloads a generated DOCX from `var/output/`.
+
+Stream a request locally with `curl -N`:
+
+```bash
+curl -N -X POST http://127.0.0.1:8000/agent \
+  -H 'Content-Type: application/json' \
+  -d '{"request": "Create a short business report for the Atlas project."}'
+```
+
+The completion event includes a relative download URL under `/documents/`.
 
 ## Layout
 
