@@ -12,7 +12,11 @@ from backend.app.agent import (
     PlanningError,
     PlanSection,
 )
-from backend.app.agent.planning import PLANNING_SYSTEM_PROMPT
+from backend.app.agent.planning import (
+    DOCUMENT_STRUCTURE_GUIDANCE,
+    DOCUMENT_TYPE_GUIDANCE,
+    PLANNING_SYSTEM_PROMPT,
+)
 
 
 class FakeRunnable:
@@ -79,6 +83,38 @@ def test_planning_prompt_lists_all_supported_document_types() -> None:
     for document_type in DocumentType:
         assert document_type.value in PLANNING_SYSTEM_PROMPT
     assert "JSON" in PLANNING_SYSTEM_PROMPT
+
+
+def test_planning_prompt_includes_explicit_classification_guidance() -> None:
+    for document_type, guidance in DOCUMENT_TYPE_GUIDANCE.items():
+        assert document_type.value in PLANNING_SYSTEM_PROMPT
+        assert guidance in PLANNING_SYSTEM_PROMPT
+
+    assert "primary purpose" in PLANNING_SYSTEM_PROMPT
+    assert "intended audience" in PLANNING_SYSTEM_PROMPT
+    assert "desired outcome" in PLANNING_SYSTEM_PROMPT
+    assert "Do not classify using isolated keywords alone" in PLANNING_SYSTEM_PROMPT
+    assert "Use other when no existing category is suitable" in PLANNING_SYSTEM_PROMPT
+
+
+def test_planning_prompt_includes_type_specific_section_guidance() -> None:
+    assert set(DOCUMENT_STRUCTURE_GUIDANCE) == set(DocumentType)
+    for sections in DOCUMENT_STRUCTURE_GUIDANCE.values():
+        for heading in sections:
+            assert heading in PLANNING_SYSTEM_PROMPT
+
+    assert DOCUMENT_STRUCTURE_GUIDANCE[DocumentType.MEETING_MINUTES] == (
+        "Meeting Details",
+        "Agenda",
+        "Discussion Points",
+        "Decisions",
+        "Action Items",
+    )
+    assert (
+        "Acceptance Criteria"
+        in DOCUMENT_STRUCTURE_GUIDANCE[DocumentType.PRODUCT_SPECIFICATION]
+    )
+    assert "Procedure Steps" in DOCUMENT_STRUCTURE_GUIDANCE[DocumentType.SOP]
 
 
 def test_document_plan_requires_at_least_one_section() -> None:

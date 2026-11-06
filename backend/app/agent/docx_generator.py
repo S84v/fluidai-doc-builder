@@ -5,10 +5,10 @@ import secrets
 from pathlib import Path
 
 from docx import Document
-from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Inches, Pt
 
 from backend.app.agent.document_content import DocumentContent
+from backend.app.agent.docx_templates import TemplateNotFoundError, render_document
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "var" / "output"
@@ -74,15 +74,7 @@ def _configure_styles(document: Document) -> None:
 
 
 def _populate_document(document: Document, content: DocumentContent) -> None:
-    title = document.add_heading(content.title, level=0)
-    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-
-    for section in content.sections:
-        document.add_heading(section.heading, level=1)
-        for paragraph in section.paragraphs:
-            document.add_paragraph(paragraph)
-        for bullet in section.bullets:
-            document.add_paragraph(bullet, style="List Bullet")
+    render_document(document, content)
 
 
 def _apply_metadata(document: Document, content: DocumentContent) -> None:
@@ -122,10 +114,17 @@ def _verify_document(destination: Path, content: DocumentContent) -> None:
         if paragraph.style.name == "Heading 1"
     ]
     expected = [section.heading.strip() for section in content.sections]
-    if headings != expected:
-        raise DocxGenerationError(
-            "The generated document sections could not be verified."
-        )
+    actual_index = 0
+    for expected_heading in expected:
+        while (
+            actual_index < len(headings) and headings[actual_index] != expected_heading
+        ):
+            actual_index += 1
+        if actual_index == len(headings):
+            raise DocxGenerationError(
+                "The generated document sections could not be verified."
+            )
+        actual_index += 1
 
 
 class DocxGenerator:
@@ -157,6 +156,9 @@ class DocxGenerator:
             _apply_metadata(document, content)
             document.save(destination)
             _verify_document(destination, content)
+        except TemplateNotFoundError as exc:
+            _remove_partial(destination)
+            raise DocxGenerationError("Unsupported document type.") from exc
         except DocxGenerationError:
             _remove_partial(destination)
             raise

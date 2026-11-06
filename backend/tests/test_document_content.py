@@ -7,15 +7,25 @@ from langchain_core.messages import BaseMessage, HumanMessage
 from pydantic import ValidationError
 
 from backend.app.agent import (
+    ActionItem,
     ContentGenerationError,
     ContentSection,
     DocumentContent,
+    DocumentMetadata,
     DocumentPlan,
     DocumentType,
     DocumentWriter,
+    MeetingDetails,
+    Milestone,
     PlanSection,
+    Requirement,
+    SopStep,
+    TechnicalComponent,
 )
-from backend.app.agent.document_writer import build_writing_messages
+from backend.app.agent.document_writer import (
+    DOCUMENT_WRITING_PROMPT,
+    build_writing_messages,
+)
 
 
 class FakeRunnable:
@@ -106,6 +116,52 @@ def test_content_section_requires_a_paragraph_or_bullet() -> None:
 def test_content_section_rejects_empty_items() -> None:
     with pytest.raises(ValidationError):
         ContentSection(heading="Overview", paragraphs=["   "])
+
+
+def test_document_content_accepts_type_specific_structures() -> None:
+    content = DocumentContent(
+        document_type=DocumentType.MEETING_MINUTES,
+        title="Kickoff Minutes",
+        audience="Project Team",
+        metadata=DocumentMetadata(date="2026-11-06", version="1.0"),
+        meeting=MeetingDetails(
+            date="2026-11-06",
+            attendees=["Anna", "Ben"],
+        ),
+        action_items=[ActionItem(action="Send notes")],
+        milestones=[Milestone(name="Phase one")],
+        sop_steps=[SopStep(instruction="Open the system.")],
+        requirements=[Requirement(description="Generate a document.")],
+        components=[
+            TechnicalComponent(
+                name="API",
+                responsibility="Serve requests.",
+            )
+        ],
+        sections=[ContentSection(heading="Overview", paragraphs=["Content."])],
+    )
+
+    assert content.meeting is not None
+    assert content.meeting.attendees == ["Anna", "Ben"]
+    assert content.action_items[0].owner is None
+    assert content.milestones[0].name == "Phase one"
+    assert content.sop_steps[0].instruction == "Open the system."
+    assert content.requirements[0].description == "Generate a document."
+    assert content.components[0].name == "API"
+
+
+def test_action_item_requires_an_action() -> None:
+    with pytest.raises(ValidationError):
+        ActionItem(action="")
+
+
+def test_writing_prompt_includes_structured_content_guidance() -> None:
+    assert "meeting_minutes" in DOCUMENT_WRITING_PROMPT
+    assert "action_items" in DOCUMENT_WRITING_PROMPT
+    assert "milestones" in DOCUMENT_WRITING_PROMPT
+    assert "sop_steps" in DOCUMENT_WRITING_PROMPT
+    assert "requirements" in DOCUMENT_WRITING_PROMPT
+    assert "components" in DOCUMENT_WRITING_PROMPT
 
 
 async def test_writer_uses_json_mode_structured_output() -> None:

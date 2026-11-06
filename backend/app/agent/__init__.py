@@ -1,6 +1,16 @@
 """Agent graph construction, planning, tools, writing, and DOCX generation."""
 
-from backend.app.agent.document_content import ContentSection, DocumentContent
+from backend.app.agent.document_content import (
+    ActionItem,
+    ContentSection,
+    DocumentContent,
+    DocumentMetadata,
+    MeetingDetails,
+    Milestone,
+    Requirement,
+    SopStep,
+    TechnicalComponent,
+)
 from backend.app.agent.document_writer import (
     ContentGenerationError,
     DocumentWriter,
@@ -38,6 +48,7 @@ from backend.app.agent.tools import (
 
 __all__ = [
     "AGENT_TOOLS",
+    "ActionItem",
     "AgentState",
     "AgentStatus",
     "CalculationError",
@@ -45,6 +56,7 @@ __all__ = [
     "ContentSection",
     "DEFAULT_OUTPUT_DIR",
     "DocumentContent",
+    "DocumentMetadata",
     "DocumentPlan",
     "DocumentPlanner",
     "DocumentType",
@@ -52,8 +64,13 @@ __all__ = [
     "DocxGenerationError",
     "DocxGenerator",
     "MAX_TOOL_ROUNDS",
+    "MeetingDetails",
+    "Milestone",
     "PlanSection",
     "PlanningError",
+    "Requirement",
+    "SopStep",
+    "TechnicalComponent",
     "ToolSelectionError",
     "ToolSelector",
     "build_agent_graph",

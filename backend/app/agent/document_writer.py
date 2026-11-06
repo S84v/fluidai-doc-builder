@@ -25,6 +25,15 @@ Rules:
 - Never invent business facts, names, dates, figures, commitments, or technical
   specifications.
 - Include at least one paragraph or bullet in every section.
+- Populate audience and metadata only when the request or plan provides them.
+- For meeting_minutes, populate meeting details and action_items.
+- For project_plan and business_proposal, populate milestones when timeline
+  information is available.
+- For sop, populate sop_steps as ordered procedure instructions.
+- For product_specification, populate requirements.
+- For technical_design, populate components.
+- Leave optional structured fields empty when they are not supported by known
+  facts; do not duplicate structured table data as bullets.
 - Do not include internal reasoning, tool calls, or meta commentary.
 """
 
