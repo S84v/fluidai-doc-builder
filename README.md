@@ -7,9 +7,6 @@ deterministic validation and DOCX rendering.
 
 ![FluidAI Doc Builder interface showing a completed request, execution plan and download](assets/app-preview.png)
 
-*Representative completed interface captured with a deterministic mock backend.
-No paid model calls were made for this preview.*
-
 ## What it does
 
 - Understands a document request and produces a validated execution plan.

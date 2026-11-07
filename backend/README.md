@@ -167,7 +167,20 @@ flowchart TD
     REVISION_FAILED --> FINAL
     DOCX_FAILED --> FINAL
     FINAL --> END([END])
+
+    classDef success fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#14532d;
+    classDef failure fill:#fee2e2,stroke:#b91c1c,stroke-width:2px,color:#7f1d1d;
+    classDef revision fill:#fef3c7,stroke:#b45309,stroke-width:2px,color:#78350f;
+    class START,PREPARE,PLAN,SELECT,TOOLS,WRITE,VALIDATE,DOCX,FINALIZE,FINAL,END success;
+    class REJECT,PLANNING_FAILED,TOOL_FAILED,TOOL_LIMIT,CONTENT_FAILED,VALIDATION_FAILED,REVIEW_FAILED,REVISION_FAILED,DOCX_FAILED failure;
+    class REVISE revision;
+    linkStyle 0,2,4,5,6,7,10,11,13,19,21,31 stroke:#15803d,stroke-width:2.5px;
+    linkStyle 1,3,8,9,12,15,16,18,20,22,23,24,25,26,27,28,29,30 stroke:#b91c1c,stroke-width:2.5px;
+    linkStyle 14,17 stroke:#b45309,stroke-width:2px;
 ```
+
+Green shows the successful path, red shows terminal failures, and amber shows
+the corrective revision loop.
 
 Key limits and routing rules:
 
