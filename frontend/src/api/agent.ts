@@ -81,6 +81,16 @@ const TASK_STATUSES: readonly TaskStatus[] = [
   "failed",
 ];
 
+const SUPPORTED_EVENT_NAMES = new Set([
+  "plan",
+  "progress",
+  "metadata",
+  "placeholders",
+  "token",
+  "complete",
+  "error",
+]);
+
 export class AgentStreamError extends Error {
   constructor(message: string) {
     super(message);
@@ -178,11 +188,7 @@ export class SseParser {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function requireString(value: unknown): string {
@@ -204,11 +210,20 @@ function requireNonEmptyString(value: unknown): string {
   return text;
 }
 
-function optionalString(value: unknown): string | null {
+function optionalNonEmptyString(value: unknown): string | null {
   if (value === null) {
     return null;
   }
-  return requireString(value);
+  return requireNonEmptyString(value);
+}
+
+function requireBoolean(value: unknown): boolean {
+  if (typeof value !== "boolean") {
+    throw new AgentStreamError(
+      "The server returned an unexpected streaming response.",
+    );
+  }
+  return value;
 }
 
 function requireTaskStatus(value: unknown): TaskStatus {
@@ -229,6 +244,10 @@ function requireArray(value: unknown): unknown[] {
   return value;
 }
 
+function requireStringArray(value: unknown): string[] {
+  return requireArray(value).map(requireNonEmptyString);
+}
+
 function parseTask(value: unknown): PlanTask {
   if (!isRecord(value)) {
     throw new AgentStreamError(
@@ -236,25 +255,25 @@ function parseTask(value: unknown): PlanTask {
     );
   }
   return {
-    id: requireString(value.id),
-    title: requireString(value.title),
-    description: requireString(value.description),
-    stage: requireString(value.stage),
-    optional: Boolean(value.optional),
+    id: requireNonEmptyString(value.id),
+    title: requireNonEmptyString(value.title),
+    description: requireNonEmptyString(value.description),
+    stage: requireNonEmptyString(value.stage),
+    optional: requireBoolean(value.optional),
     status: requireTaskStatus(value.status),
   };
 }
 
 function parseConflict(value: unknown): PlanConflict {
-  if (!isRecord(value) || !isStringArray(value.requirements)) {
+  if (!isRecord(value)) {
     throw new AgentStreamError(
       "The server returned an unexpected requirement conflict.",
     );
   }
   return {
-    requirements: value.requirements,
-    impact: requireString(value.impact),
-    resolution: optionalString(value.resolution),
+    requirements: requireStringArray(value.requirements),
+    impact: requireNonEmptyString(value.impact),
+    resolution: optionalNonEmptyString(value.resolution),
   };
 }
 
@@ -265,9 +284,9 @@ function parsePlanPlaceholder(value: unknown): PlanPlaceholder {
     );
   }
   return {
-    text: requireString(value.text),
-    section: requireString(value.section),
-    reason: requireString(value.reason),
+    text: requireNonEmptyString(value.text),
+    section: requireNonEmptyString(value.section),
+    reason: requireNonEmptyString(value.reason),
   };
 }
 
@@ -278,9 +297,9 @@ function parseRenderedPlaceholder(value: unknown): RenderedPlaceholder {
     );
   }
   return {
-    text: requireString(value.text),
-    location: requireString(value.location),
-    reason: requireString(value.reason),
+    text: requireNonEmptyString(value.text),
+    location: requireNonEmptyString(value.location),
+    reason: requireNonEmptyString(value.reason),
   };
 }
 
@@ -292,29 +311,27 @@ function parsePlan(value: unknown): ExecutionPlan {
   }
 
   return {
-    documentType: requireString(value.document_type),
-    title: requireString(value.title),
-    objective: requireString(value.objective),
-    audience: optionalString(value.audience),
-    documentDate: optionalString(value.document_date),
-    documentVersion: optionalString(value.document_version),
-    providedFacts: isStringArray(value.provided_facts)
-      ? value.provided_facts
-      : [],
+    documentType: requireNonEmptyString(value.document_type),
+    title: requireNonEmptyString(value.title),
+    objective: requireNonEmptyString(value.objective),
+    audience: optionalNonEmptyString(value.audience),
+    documentDate: optionalNonEmptyString(value.document_date),
+    documentVersion: optionalNonEmptyString(value.document_version),
+    providedFacts: requireStringArray(value.provided_facts),
     tasks: requireArray(value.tasks).map(parseTask),
     conflicts: requireArray(value.conflicts).map(parseConflict),
-    missingInformation: isStringArray(value.missing_information)
-      ? value.missing_information
-      : [],
-    assumptions: isStringArray(value.assumptions) ? value.assumptions : [],
-    clarificationQuestions: isStringArray(value.clarification_questions)
-      ? value.clarification_questions
-      : [],
+    missingInformation: requireStringArray(value.missing_information),
+    assumptions: requireStringArray(value.assumptions),
+    clarificationQuestions: requireStringArray(value.clarification_questions),
     placeholders: requireArray(value.placeholders).map(parsePlanPlaceholder),
   };
 }
 
 export function parseAgentEvent(raw: RawSseEvent): AgentEvent | null {
+  if (!SUPPORTED_EVENT_NAMES.has(raw.event)) {
+    return null;
+  }
+
   let payload: unknown;
   try {
     payload = JSON.parse(raw.data);
@@ -337,10 +354,10 @@ export function parseAgentEvent(raw: RawSseEvent): AgentEvent | null {
   if (raw.event === "progress") {
     return {
       type: "progress",
-      stage: requireString(payload.stage),
-      taskIds: requireArray(payload.task_ids).map(requireString),
+      stage: requireNonEmptyString(payload.stage),
+      taskIds: requireStringArray(payload.task_ids),
       status: requireTaskStatus(payload.status),
-      message: requireString(payload.message),
+      message: requireNonEmptyString(payload.message),
     };
   }
 
@@ -362,19 +379,19 @@ export function parseAgentEvent(raw: RawSseEvent): AgentEvent | null {
   }
 
   if (raw.event === "token") {
-    return { type: "token", text: requireString(payload.text) };
+    return { type: "token", text: requireNonEmptyString(payload.text) };
   }
 
   if (raw.event === "complete") {
     return {
       type: "complete",
-      filename: requireString(payload.filename),
-      url: requireString(payload.url),
+      filename: requireNonEmptyString(payload.filename),
+      url: requireNonEmptyString(payload.url),
     };
   }
 
   if (raw.event === "error") {
-    return { type: "error", message: requireString(payload.message) };
+    return { type: "error", message: requireNonEmptyString(payload.message) };
   }
 
   return null;
