@@ -4,10 +4,16 @@ import {
   AgentStreamError,
   streamAgentRequest,
   type ExecutionPlan,
+  type PlanConflict,
   type PlanTask,
   type RenderedPlaceholder,
   type TaskStatus,
 } from "./api/agent";
+import {
+  buildInputImprovementTip,
+  groupPlaceholders,
+} from "./placeholderGroups";
+import { cleanCompletionText, isCompletionMessage } from "./resultText";
 
 type Phase = "idle" | "running" | "completed" | "failed";
 
@@ -44,6 +50,9 @@ const STAGE_LABELS: Record<string, string> = {
   docx_generation: "DOCX generation",
   finalization: "Finalization",
 };
+
+const PLAN_PREVIEW_LIMIT = 3;
+const CONFLICT_PREVIEW_LIMIT = 1;
 
 const EXAMPLE_REQUESTS: ExampleRequest[] = [
   {
@@ -117,11 +126,120 @@ function updateTaskStatuses(
   };
 }
 
+type PlanListSectionProps = {
+  title: string;
+  ariaLabel: string;
+  items: string[];
+  itemLabel: string;
+  warning?: boolean;
+};
+
+function PlanListSection({
+  title,
+  ariaLabel,
+  items,
+  itemLabel,
+  warning = false,
+}: PlanListSectionProps) {
+  if (items.length === 0) {
+    return null;
+  }
+
+  const preview = items.slice(0, PLAN_PREVIEW_LIMIT);
+  const remaining = items.slice(PLAN_PREVIEW_LIMIT);
+
+  return (
+    <section
+      className={`detail-block${warning ? " warning-block" : ""}`}
+      aria-label={ariaLabel}
+    >
+      <h3>{title}</h3>
+      <ul>
+        {preview.map((item, index) => (
+          <li key={`${item}-${index}`}>{item}</li>
+        ))}
+      </ul>
+      {remaining.length > 0 && (
+        <details className="plan-disclosure">
+          <summary>
+            Show remaining {remaining.length}{" "}
+            {remaining.length === 1 ? itemLabel : `${itemLabel}s`}
+          </summary>
+          <ul>
+            {remaining.map((item, index) => (
+              <li key={`${item}-${index + PLAN_PREVIEW_LIMIT}`}>{item}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </section>
+  );
+}
+
+function PlanConflictItem({ conflict }: { conflict: PlanConflict }) {
+  return (
+    <li>
+      <ul className="nested-list">
+        {conflict.requirements.map((requirement, index) => (
+          <li key={`${requirement}-${index}`}>{requirement}</li>
+        ))}
+      </ul>
+      <p>
+        <strong>Impact:</strong> {conflict.impact}
+      </p>
+      <p>
+        <strong>Resolution:</strong>{" "}
+        {conflict.resolution ?? "Unresolved"}
+      </p>
+    </li>
+  );
+}
+
+function PlanConflictSection({ conflicts }: { conflicts: PlanConflict[] }) {
+  if (conflicts.length === 0) {
+    return null;
+  }
+
+  const preview = conflicts.slice(0, CONFLICT_PREVIEW_LIMIT);
+  const remaining = conflicts.slice(CONFLICT_PREVIEW_LIMIT);
+
+  return (
+    <section className="detail-block warning-block" aria-label="Conflicts">
+      <h3>Conflicting requirements</h3>
+      <ul>
+        {preview.map((conflict, index) => (
+          <PlanConflictItem
+            conflict={conflict}
+            key={`${conflict.impact}-${index}`}
+          />
+        ))}
+      </ul>
+      {remaining.length > 0 && (
+        <details className="plan-disclosure">
+          <summary>
+            Show remaining {remaining.length}{" "}
+            {remaining.length === 1 ? "conflict" : "conflicts"}
+          </summary>
+          <ul>
+            {remaining.map((conflict, index) => (
+              <PlanConflictItem
+                conflict={conflict}
+                key={`${conflict.impact}-${index + CONFLICT_PREVIEW_LIMIT}`}
+              />
+            ))}
+          </ul>
+        </details>
+      )}
+    </section>
+  );
+}
+
 export default function App() {
   const [request, setRequest] = useState("");
   const [phase, setPhase] = useState<Phase>("idle");
   const [plan, setPlan] = useState<ExecutionPlan | null>(null);
   const [latestProgress, setLatestProgress] = useState("");
+  const [latestStage, setLatestStage] = useState("");
   const [renderedPlaceholders, setRenderedPlaceholders] = useState<
     RenderedPlaceholder[] | null
   >(null);
@@ -159,6 +277,7 @@ export default function App() {
     setPhase("running");
     setPlan(null);
     setLatestProgress("");
+    setLatestStage("");
     setRenderedPlaceholders(null);
     setFinalText("");
     setFilename("");
@@ -173,6 +292,7 @@ export default function App() {
             setPlan(agentEvent.plan);
           } else if (agentEvent.type === "progress") {
             setLatestProgress(agentEvent.message);
+            setLatestStage(agentEvent.stage);
             setPlan((current) =>
               current === null
                 ? current
@@ -221,7 +341,7 @@ export default function App() {
     }
   }
 
-  const placeholderList =
+  const placeholderList: RenderedPlaceholder[] =
     renderedPlaceholders ??
     plan?.placeholders.map((placeholder) => ({
       text: placeholder.text,
@@ -229,6 +349,19 @@ export default function App() {
       reason: placeholder.reason,
     })) ??
     [];
+  const placeholderGroups = groupPlaceholders(placeholderList);
+  const inputImprovementTip = buildInputImprovementTip(plan);
+  const activeTask = plan?.tasks.find((task) => task.status === "active");
+  const currentStage = activeTask?.stage ?? latestStage;
+  const currentStageLabel = currentStage
+    ? formatStage(currentStage)
+    : "Waiting for updates";
+  const completionText =
+    phase === "completed"
+      ? cleanCompletionText(finalText, filename)
+      : finalText;
+  const runningText =
+    phase === "running" && !isCompletionMessage(finalText) ? finalText : "";
 
   return (
     <div className="app-shell">
@@ -327,34 +460,66 @@ export default function App() {
           )}
 
           {plan !== null && (
-            <>
-              {latestProgress && (
-                <p className="latest-progress" role="status">
-                  {latestProgress}
+            <div className="execution-area">
+              <div
+                className="execution-current"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                <div className="execution-current__stage">
+                  <span className="execution-current__label">Current stage</span>
+                  <strong>{currentStageLabel}</strong>
+                </div>
+                <p className="execution-current__message">
+                  {latestProgress ||
+                    "Task updates will appear as the agent works."}
                 </p>
+              </div>
+
+              <div className="task-list-heading">
+                <h3>Tasks</h3>
+                <span>
+                  {plan.tasks.length} {plan.tasks.length === 1 ? "task" : "tasks"}
+                </span>
+              </div>
+
+              {plan.tasks.length === 0 ? (
+                <p className="muted-copy">
+                  No tasks were returned for this plan.
+                </p>
+              ) : (
+                <ol
+                  className="task-list"
+                  aria-live="polite"
+                  aria-label="Execution tasks"
+                >
+                  {plan.tasks.map((task: PlanTask) => (
+                    <li
+                      key={task.id}
+                      className={`task task-${task.status}`}
+                      aria-current={task.status === "active" ? "step" : undefined}
+                    >
+                      <div className="task-heading">
+                        <span className="task-title">{task.title}</span>
+                        <span className={`task-status task-status-${task.status}`}>
+                          {TASK_STATUS_LABELS[task.status]}
+                        </span>
+                      </div>
+                      <p className="task-description">{task.description}</p>
+                      <div className="task-meta">
+                        <span className="task-stage">
+                          {formatStage(task.stage)}
+                        </span>
+                        {task.optional && (
+                          <span className="task-optional">Optional</span>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ol>
               )}
-              <ol className="task-list" aria-live="polite">
-                {plan.tasks.map((task: PlanTask) => (
-                  <li
-                    key={task.id}
-                    className={`task task-${task.status}`}
-                    aria-current={task.status === "active" ? "step" : undefined}
-                  >
-                    <div className="task-heading">
-                      <span className="task-title">{task.title}</span>
-                      <span className={`task-status task-status-${task.status}`}>
-                        {TASK_STATUS_LABELS[task.status]}
-                      </span>
-                    </div>
-                    <p className="task-description">{task.description}</p>
-                    <div className="task-meta">
-                      <span>{formatStage(task.stage)}</span>
-                      {task.optional && <span>Optional</span>}
-                    </div>
-                  </li>
-                ))}
-              </ol>
-            </>
+            </div>
           )}
         </section>
 
@@ -380,86 +545,39 @@ export default function App() {
                 <span>Document version</span>
                 {plan.documentVersion ?? "Pending generation"}
               </p>
-              <p>
+              <p className="plan-summary-objective">
                 <span>Objective</span>
                 {plan.objective}
               </p>
             </div>
 
             <div className="plan-details-grid">
-              {plan.conflicts.length > 0 && (
-                <section className="detail-block warning-block" aria-label="Conflicts">
-                  <h3>Conflicting requirements</h3>
-                  <ul>
-                    {plan.conflicts.map((conflict, index) => (
-                      <li key={`${index}-${conflict.impact}`}>
-                        <ul className="nested-list">
-                          {conflict.requirements.map((requirement) => (
-                            <li key={requirement}>{requirement}</li>
-                          ))}
-                        </ul>
-                        <p>
-                          <strong>Impact:</strong> {conflict.impact}
-                        </p>
-                        <p>
-                          <strong>Resolution:</strong>{" "}
-                          {conflict.resolution ?? "Unresolved"}
-                        </p>
-                      </li>
-                    ))}
-                  </ul>
-                </section>
-              )}
-
-              {plan.missingInformation.length > 0 && (
-                <section
-                  className="detail-block warning-block"
-                  aria-label="Missing information"
-                >
-                  <h3>Missing information</h3>
-                  <ul>
-                    {plan.missingInformation.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                </section>
-              )}
-
-              {plan.assumptions.length > 0 && (
-                <section className="detail-block" aria-label="Assumptions">
-                  <h3>Assumptions</h3>
-                  <ul>
-                    {plan.assumptions.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                </section>
-              )}
-
-              {plan.providedFacts.length > 0 && (
-                <section className="detail-block" aria-label="Confirmed facts">
-                  <h3>Confirmed facts</h3>
-                  <ul>
-                    {plan.providedFacts.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                </section>
-              )}
-
-              {plan.clarificationQuestions.length > 0 && (
-                <section
-                  className="detail-block"
-                  aria-label="Clarification questions"
-                >
-                  <h3>Questions for clarification</h3>
-                  <ul>
-                    {plan.clarificationQuestions.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                </section>
-              )}
+              <PlanListSection
+                title="Confirmed facts"
+                ariaLabel="Confirmed facts"
+                items={plan.providedFacts}
+                itemLabel="fact"
+              />
+              <PlanListSection
+                title="Missing information"
+                ariaLabel="Missing information"
+                items={plan.missingInformation}
+                itemLabel="missing item"
+                warning
+              />
+              <PlanListSection
+                title="Assumptions"
+                ariaLabel="Assumptions"
+                items={plan.assumptions}
+                itemLabel="assumption"
+              />
+              <PlanConflictSection conflicts={plan.conflicts} />
+              <PlanListSection
+                title="Questions for clarification"
+                ariaLabel="Clarification questions"
+                items={plan.clarificationQuestions}
+                itemLabel="question"
+              />
 
               <section className="detail-block placeholder-block" aria-label="Placeholders">
                 <h3>
@@ -467,27 +585,52 @@ export default function App() {
                     ? "Planned placeholders"
                     : "Placeholders remaining in the document"}
                 </h3>
-                {placeholderList.length === 0 ? (
+                {placeholderGroups.length === 0 ? (
                   <p className="muted-copy">No unresolved placeholders remain.</p>
                 ) : (
-                  <ul>
-                    {placeholderList.map((placeholder, index) => (
-                      <li key={`${placeholder.text}-${placeholder.location}-${index}`}>
-                        <code>{placeholder.text}</code>
-                        <span className="placeholder-location">
-                          {placeholder.location}
-                        </span>
-                        <p>{placeholder.reason}</p>
+                  <ul className="placeholder-group-list">
+                    {placeholderGroups.map((group) => (
+                      <li key={JSON.stringify([group.text, group.reason])}>
+                        <div className="placeholder-heading">
+                          <code>{group.text}</code>
+                          <span className="placeholder-count">
+                            {group.count}{" "}
+                            {group.count === 1 ? "occurrence" : "occurrences"}
+                          </span>
+                        </div>
+                        <p>{group.reason}</p>
+                        {group.locations.length > 1 ? (
+                          <details className="placeholder-locations">
+                            <summary>
+                              {group.locations.length} locations
+                            </summary>
+                            <ul>
+                              {group.locations.map((location) => (
+                                <li key={location}>{location}</li>
+                              ))}
+                            </ul>
+                          </details>
+                        ) : (
+                          <span className="placeholder-location">
+                            {group.locations[0]}
+                          </span>
+                        )}
                       </li>
                     ))}
                   </ul>
+                )}
+                {inputImprovementTip !== null && (
+                  <p className="placeholder-tip">{inputImprovementTip}</p>
                 )}
               </section>
             </div>
           </section>
         )}
 
-        <section className="panel result-panel" aria-labelledby="result-heading">
+        <section
+          className={`panel result-panel result-${phase}`}
+          aria-labelledby="result-heading"
+        >
           <div className="panel-heading">
             <div>
               <p className="section-kicker">3. Result</p>
@@ -502,18 +645,39 @@ export default function App() {
             </p>
           )}
 
-          {phase === "running" && finalText.length === 0 && (
+          {phase === "running" && runningText.length === 0 && (
             <p className="empty-state" role="status">
               The agent is working on your request.
             </p>
           )}
 
-          {finalText.length > 0 && <p className="final-text">{finalText}</p>}
+          {phase === "running" && runningText.length > 0 && (
+            <p className="final-text">{runningText}</p>
+          )}
 
           {phase === "completed" && downloadUrl.length > 0 && (
             <div className="completion-block">
-              <p className="completion-label">Generated file</p>
-              <code className="filename">{filename}</code>
+              <div className="completion-status" role="status">
+                <span className="completion-status__icon" aria-hidden="true">
+                  ✓
+                </span>
+                <div>
+                  <p className="completion-status__title">Generation complete</p>
+                  <p className="completion-status__copy">
+                    Your document is ready to download.
+                  </p>
+                </div>
+              </div>
+
+              {completionText.length > 0 && (
+                <p className="final-text">{completionText}</p>
+              )}
+
+              <div className="completion-file">
+                <p className="completion-label">Filename</p>
+                <code className="filename">{filename}</code>
+              </div>
+
               <a className="download-link" href={downloadUrl} download={filename}>
                 Download Document
               </a>
