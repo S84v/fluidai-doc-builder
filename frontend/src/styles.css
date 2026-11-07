@@ -674,6 +674,16 @@ summary:focus-visible,
   grid-column: 1 / -1;
 }
 
+.placeholder-scroll {
+  max-width: 100%;
+  max-height: clamp(220px, 40vh, 360px);
+  padding-right: 4px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
 .placeholder-block code {
   padding: 1px 4px;
   color: var(--text);
@@ -738,17 +748,6 @@ summary:focus-visible,
   margin: 5px 0 0;
   font-size: 0.75rem;
   line-height: 1.45;
-}
-
-.placeholder-tip {
-  padding: 8px 10px;
-  margin: 10px 0 0 !important;
-  color: var(--text-secondary);
-  font-size: 0.8rem;
-  line-height: 1.45;
-  background: var(--primary-soft);
-  border-left: 3px solid var(--primary);
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
 
 .muted-copy {

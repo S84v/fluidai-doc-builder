@@ -9,10 +9,7 @@ import {
   type RenderedPlaceholder,
   type TaskStatus,
 } from "./api/agent";
-import {
-  buildInputImprovementTip,
-  groupPlaceholders,
-} from "./placeholderGroups";
+import { groupPlaceholders } from "./placeholderGroups";
 import { cleanCompletionText, isCompletionMessage } from "./resultText";
 
 type Phase = "idle" | "running" | "completed" | "failed";
@@ -184,13 +181,6 @@ function PlanConflictItem({ conflict }: { conflict: PlanConflict }) {
           <li key={`${requirement}-${index}`}>{requirement}</li>
         ))}
       </ul>
-      <p>
-        <strong>Impact:</strong> {conflict.impact}
-      </p>
-      <p>
-        <strong>Resolution:</strong>{" "}
-        {conflict.resolution ?? "Unresolved"}
-      </p>
     </li>
   );
 }
@@ -210,7 +200,7 @@ function PlanConflictSection({ conflicts }: { conflicts: PlanConflict[] }) {
         {preview.map((conflict, index) => (
           <PlanConflictItem
             conflict={conflict}
-            key={`${conflict.impact}-${index}`}
+            key={`${conflict.requirements.join("|")}-${index}`}
           />
         ))}
       </ul>
@@ -224,7 +214,7 @@ function PlanConflictSection({ conflicts }: { conflicts: PlanConflict[] }) {
             {remaining.map((conflict, index) => (
               <PlanConflictItem
                 conflict={conflict}
-                key={`${conflict.impact}-${index + CONFLICT_PREVIEW_LIMIT}`}
+                key={`${conflict.requirements.join("|")}-${index + CONFLICT_PREVIEW_LIMIT}`}
               />
             ))}
           </ul>
@@ -350,7 +340,6 @@ export default function App() {
     })) ??
     [];
   const placeholderGroups = groupPlaceholders(placeholderList);
-  const inputImprovementTip = buildInputImprovementTip(plan);
   const activeTask = plan?.tasks.find((task) => task.status === "active");
   const currentStage = activeTask?.stage ?? latestStage;
   const currentStageLabel = currentStage
@@ -588,39 +577,38 @@ export default function App() {
                 {placeholderGroups.length === 0 ? (
                   <p className="muted-copy">No unresolved placeholders remain.</p>
                 ) : (
-                  <ul className="placeholder-group-list">
-                    {placeholderGroups.map((group) => (
-                      <li key={JSON.stringify([group.text, group.reason])}>
-                        <div className="placeholder-heading">
-                          <code>{group.text}</code>
-                          <span className="placeholder-count">
-                            {group.count}{" "}
-                            {group.count === 1 ? "occurrence" : "occurrences"}
-                          </span>
-                        </div>
-                        <p>{group.reason}</p>
-                        {group.locations.length > 1 ? (
-                          <details className="placeholder-locations">
-                            <summary>
-                              {group.locations.length} locations
-                            </summary>
-                            <ul>
-                              {group.locations.map((location) => (
-                                <li key={location}>{location}</li>
-                              ))}
-                            </ul>
-                          </details>
-                        ) : (
-                          <span className="placeholder-location">
-                            {group.locations[0]}
-                          </span>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                {inputImprovementTip !== null && (
-                  <p className="placeholder-tip">{inputImprovementTip}</p>
+                  <div className="placeholder-scroll">
+                    <ul className="placeholder-group-list">
+                      {placeholderGroups.map((group) => (
+                        <li key={JSON.stringify([group.text, group.reason])}>
+                          <div className="placeholder-heading">
+                            <code>{group.text}</code>
+                            <span className="placeholder-count">
+                              {group.count}{" "}
+                              {group.count === 1 ? "occurrence" : "occurrences"}
+                            </span>
+                          </div>
+                          <p>{group.reason}</p>
+                          {group.locations.length > 1 ? (
+                            <details className="placeholder-locations">
+                              <summary>
+                                {group.locations.length} locations
+                              </summary>
+                              <ul>
+                                {group.locations.map((location) => (
+                                  <li key={location}>{location}</li>
+                                ))}
+                              </ul>
+                            </details>
+                          ) : (
+                            <span className="placeholder-location">
+                              {group.locations[0]}
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
                 )}
               </section>
             </div>

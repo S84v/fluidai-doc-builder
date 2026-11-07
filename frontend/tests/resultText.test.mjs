@@ -77,6 +77,26 @@ test("preserves multiple paragraphs and line breaks", () => {
   );
 });
 
+test("removes the validation notes summary from the completed result", () => {
+  const response = [
+    `Document generated successfully: ${FILENAME}`,
+    "",
+    "Validation notes: 2 non-blocking warning(s) (section_structure_mismatch, review_unavailable)",
+  ].join("\n");
+
+  assert.equal(cleanCompletionText(response, FILENAME), "");
+});
+
+test("removes validation notes while preserving earlier result text", () => {
+  assert.equal(
+    cleanCompletionText(
+      `Document generated successfully: ${FILENAME}\n\nReview the document before sending.\n\nValidation notes: 1 non-blocking warning(s) (review_unavailable)`,
+      FILENAME,
+    ),
+    "Review the document before sending.",
+  );
+});
+
 test("preserves substantive text following the success prefix", () => {
   assert.equal(
     cleanCompletionText(

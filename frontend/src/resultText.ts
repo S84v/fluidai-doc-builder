@@ -1,4 +1,5 @@
 const SUCCESS_PREFIX = /^Document generated successfully:?\s*/i;
+const VALIDATION_NOTES_LINE = /^[ \t]*Validation notes:.*$/gm;
 const FILENAME_BOUNDARY_START = "[^\\w./\\\\-]";
 const FILENAME_BOUNDARY_END = "(?![\\w/\\\\-]|\\.[\\w/\\\\-])";
 
@@ -26,12 +27,22 @@ export function cleanCompletionText(
 
   let cleaned = text.replace(SUCCESS_PREFIX, "").trimStart();
   cleaned = removeStandaloneFilename(cleaned, name);
-  cleaned = cleaned.trim();
+  cleaned = removeValidationNotes(cleaned).trim();
 
   if (cleaned.replace(/[\s:;,.–—-]/g, "").length === 0) {
     return "";
   }
   return cleaned;
+}
+
+function removeValidationNotes(text: string): string {
+  if (!/^[ \t]*Validation notes:/m.test(text)) {
+    return text;
+  }
+
+  // Validation notes remain in the streamed/backend response for diagnostics,
+  // but the completed download result should show only the document outcome.
+  return text.replace(VALIDATION_NOTES_LINE, "").replace(/\n{3,}/g, "\n\n");
 }
 
 function removeStandaloneFilename(text: string, name: string): string {
