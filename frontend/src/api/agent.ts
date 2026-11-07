@@ -1,10 +1,69 @@
+export type TaskStatus =
+  | "pending"
+  | "active"
+  | "completed"
+  | "skipped"
+  | "failed";
+
+export type PlanTask = {
+  id: string;
+  title: string;
+  description: string;
+  stage: string;
+  optional: boolean;
+  status: TaskStatus;
+};
+
+export type PlanConflict = {
+  requirements: string[];
+  impact: string;
+  resolution: string | null;
+};
+
+export type PlanPlaceholder = {
+  text: string;
+  section: string;
+  reason: string;
+};
+
+export type RenderedPlaceholder = {
+  text: string;
+  location: string;
+  reason: string;
+};
+
+export type ExecutionPlan = {
+  documentType: string;
+  title: string;
+  objective: string;
+  audience: string | null;
+  documentDate: string | null;
+  documentVersion: string | null;
+  providedFacts: string[];
+  tasks: PlanTask[];
+  conflicts: PlanConflict[];
+  missingInformation: string[];
+  assumptions: string[];
+  clarificationQuestions: string[];
+  placeholders: PlanPlaceholder[];
+};
+
 export type AgentEvent =
-  | { type: "progress"; message: string }
+  | { type: "plan"; plan: ExecutionPlan }
+  | {
+      type: "progress";
+      stage: string;
+      taskIds: string[];
+      status: TaskStatus;
+      message: string;
+    }
+  | { type: "metadata"; documentDate: string; documentVersion: string }
+  | { type: "placeholders"; placeholders: RenderedPlaceholder[] }
   | { type: "token"; text: string }
   | { type: "complete"; filename: string; url: string }
   | { type: "error"; message: string };
 
-type RawSseEvent = {
+export type RawSseEvent = {
   event: string;
   data: string;
 };
@@ -13,6 +72,14 @@ type EventBoundary = {
   index: number;
   length: number;
 };
+
+const TASK_STATUSES: readonly TaskStatus[] = [
+  "pending",
+  "active",
+  "completed",
+  "skipped",
+  "failed",
+];
 
 export class AgentStreamError extends Error {
   constructor(message: string) {
@@ -114,7 +181,140 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function parseAgentEvent(raw: RawSseEvent): AgentEvent | null {
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function requireString(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new AgentStreamError(
+      "The server returned an unexpected streaming response.",
+    );
+  }
+  return value;
+}
+
+function requireNonEmptyString(value: unknown): string {
+  const text = requireString(value);
+  if (text.trim().length === 0) {
+    throw new AgentStreamError(
+      "The server returned an unexpected streaming response.",
+    );
+  }
+  return text;
+}
+
+function optionalString(value: unknown): string | null {
+  if (value === null) {
+    return null;
+  }
+  return requireString(value);
+}
+
+function requireTaskStatus(value: unknown): TaskStatus {
+  if (typeof value === "string" && TASK_STATUSES.includes(value as TaskStatus)) {
+    return value as TaskStatus;
+  }
+  throw new AgentStreamError(
+    "The server returned an unexpected task status.",
+  );
+}
+
+function requireArray(value: unknown): unknown[] {
+  if (!Array.isArray(value)) {
+    throw new AgentStreamError(
+      "The server returned an unexpected streaming response.",
+    );
+  }
+  return value;
+}
+
+function parseTask(value: unknown): PlanTask {
+  if (!isRecord(value)) {
+    throw new AgentStreamError(
+      "The server returned an unexpected execution task.",
+    );
+  }
+  return {
+    id: requireString(value.id),
+    title: requireString(value.title),
+    description: requireString(value.description),
+    stage: requireString(value.stage),
+    optional: Boolean(value.optional),
+    status: requireTaskStatus(value.status),
+  };
+}
+
+function parseConflict(value: unknown): PlanConflict {
+  if (!isRecord(value) || !isStringArray(value.requirements)) {
+    throw new AgentStreamError(
+      "The server returned an unexpected requirement conflict.",
+    );
+  }
+  return {
+    requirements: value.requirements,
+    impact: requireString(value.impact),
+    resolution: optionalString(value.resolution),
+  };
+}
+
+function parsePlanPlaceholder(value: unknown): PlanPlaceholder {
+  if (!isRecord(value)) {
+    throw new AgentStreamError(
+      "The server returned an unexpected planned placeholder.",
+    );
+  }
+  return {
+    text: requireString(value.text),
+    section: requireString(value.section),
+    reason: requireString(value.reason),
+  };
+}
+
+function parseRenderedPlaceholder(value: unknown): RenderedPlaceholder {
+  if (!isRecord(value)) {
+    throw new AgentStreamError(
+      "The server returned an unexpected rendered placeholder.",
+    );
+  }
+  return {
+    text: requireString(value.text),
+    location: requireString(value.location),
+    reason: requireString(value.reason),
+  };
+}
+
+function parsePlan(value: unknown): ExecutionPlan {
+  if (!isRecord(value)) {
+    throw new AgentStreamError(
+      "The server returned an unexpected execution plan.",
+    );
+  }
+
+  return {
+    documentType: requireString(value.document_type),
+    title: requireString(value.title),
+    objective: requireString(value.objective),
+    audience: optionalString(value.audience),
+    documentDate: optionalString(value.document_date),
+    documentVersion: optionalString(value.document_version),
+    providedFacts: isStringArray(value.provided_facts)
+      ? value.provided_facts
+      : [],
+    tasks: requireArray(value.tasks).map(parseTask),
+    conflicts: requireArray(value.conflicts).map(parseConflict),
+    missingInformation: isStringArray(value.missing_information)
+      ? value.missing_information
+      : [],
+    assumptions: isStringArray(value.assumptions) ? value.assumptions : [],
+    clarificationQuestions: isStringArray(value.clarification_questions)
+      ? value.clarification_questions
+      : [],
+    placeholders: requireArray(value.placeholders).map(parsePlanPlaceholder),
+  };
+}
+
+export function parseAgentEvent(raw: RawSseEvent): AgentEvent | null {
   let payload: unknown;
   try {
     payload = JSON.parse(raw.data);
@@ -130,39 +330,51 @@ function parseAgentEvent(raw: RawSseEvent): AgentEvent | null {
     );
   }
 
-  if (raw.event === "progress" && typeof payload.message === "string") {
-    return { type: "progress", message: payload.message };
+  if (raw.event === "plan") {
+    return { type: "plan", plan: parsePlan(payload) };
   }
 
-  if (raw.event === "token" && typeof payload.text === "string") {
-    return { type: "token", text: payload.text };
-  }
-
-  if (
-    raw.event === "complete" &&
-    typeof payload.filename === "string" &&
-    typeof payload.url === "string"
-  ) {
+  if (raw.event === "progress") {
     return {
-      type: "complete",
-      filename: payload.filename,
-      url: payload.url,
+      type: "progress",
+      stage: requireString(payload.stage),
+      taskIds: requireArray(payload.task_ids).map(requireString),
+      status: requireTaskStatus(payload.status),
+      message: requireString(payload.message),
     };
   }
 
-  if (raw.event === "error" && typeof payload.message === "string") {
-    return { type: "error", message: payload.message };
+  if (raw.event === "metadata") {
+    return {
+      type: "metadata",
+      documentDate: requireNonEmptyString(payload.document_date),
+      documentVersion: requireNonEmptyString(payload.document_version),
+    };
   }
 
-  if (
-    raw.event === "progress" ||
-    raw.event === "token" ||
-    raw.event === "complete" ||
-    raw.event === "error"
-  ) {
-    throw new AgentStreamError(
-      "The server returned an unexpected streaming response.",
-    );
+  if (raw.event === "placeholders") {
+    return {
+      type: "placeholders",
+      placeholders: requireArray(payload.placeholders).map(
+        parseRenderedPlaceholder,
+      ),
+    };
+  }
+
+  if (raw.event === "token") {
+    return { type: "token", text: requireString(payload.text) };
+  }
+
+  if (raw.event === "complete") {
+    return {
+      type: "complete",
+      filename: requireString(payload.filename),
+      url: requireString(payload.url),
+    };
+  }
+
+  if (raw.event === "error") {
+    return { type: "error", message: requireString(payload.message) };
   }
 
   return null;
