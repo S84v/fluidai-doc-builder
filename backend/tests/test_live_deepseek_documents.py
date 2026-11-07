@@ -110,7 +110,8 @@ async def test_live_json_mode_planning_writing_and_docx(
     ]
     assert TEMPLATE_RENDERERS[content.document_type] is expected_renderer
 
-    filename = DocxGenerator(tmp_path).generate(content, user_request)
+    generated = DocxGenerator(tmp_path).generate(content, user_request, plan)
+    filename = generated.filename
     destination = tmp_path / filename
     assert destination.exists()
 

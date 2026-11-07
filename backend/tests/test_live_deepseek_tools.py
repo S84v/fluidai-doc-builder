@@ -24,6 +24,7 @@ from backend.app.agent import (
 )
 from backend.app.config import Settings
 from backend.app.services.llm import build_chat_model
+from backend.tests.plan_factory import make_execution_tasks
 
 RUN_LIVE = os.getenv("RUN_LIVE_DEEPSEEK_TESTS") == "1"
 
@@ -39,6 +40,7 @@ pytestmark = [
 class StaticPlanner:
     async def create_plan(self, request: str) -> DocumentPlan:
         return DocumentPlan(
+            execution_tasks=make_execution_tasks(),
             document_type=DocumentType.BUSINESS_REPORT,
             title="Calculation Check",
             objective="Verify the calculator tool integration.",

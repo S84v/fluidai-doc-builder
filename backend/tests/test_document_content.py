@@ -19,6 +19,7 @@ from backend.app.agent import (
     Milestone,
     PlanSection,
     Requirement,
+    RequirementConflict,
     SopStep,
     TechnicalComponent,
 )
@@ -26,6 +27,7 @@ from backend.app.agent.document_writer import (
     DOCUMENT_WRITING_PROMPT,
     build_writing_messages,
 )
+from backend.tests.plan_factory import make_execution_tasks
 
 
 class FakeRunnable:
@@ -64,6 +66,7 @@ class FakeStructuredModel:
 
 def _plan() -> DocumentPlan:
     return DocumentPlan(
+        execution_tasks=make_execution_tasks(),
         document_type=DocumentType.BUSINESS_REPORT,
         title="Quarterly Business Report",
         objective="Report quarterly progress.",
@@ -108,9 +111,11 @@ def test_document_content_requires_at_least_one_section() -> None:
         )
 
 
-def test_content_section_requires_a_paragraph_or_bullet() -> None:
-    with pytest.raises(ValidationError):
-        ContentSection(heading="Empty")
+def test_content_section_allows_an_empty_body_for_omitted_content() -> None:
+    section = ContentSection(heading="Meeting Details")
+
+    assert section.paragraphs == []
+    assert section.bullets == []
 
 
 def test_content_section_rejects_empty_items() -> None:
@@ -164,6 +169,32 @@ def test_writing_prompt_includes_structured_content_guidance() -> None:
     assert "components" in DOCUMENT_WRITING_PROMPT
 
 
+def test_writing_prompt_prohibits_unsupported_factual_content() -> None:
+    assert "sole source of factual information" in DOCUMENT_WRITING_PROMPT
+    assert "Never invent names, organisations, dates, financial figures" in (
+        DOCUMENT_WRITING_PROMPT
+    )
+    assert "Do not present planning assumptions or conflict resolutions" in (
+        DOCUMENT_WRITING_PROMPT
+    )
+    assert "Do not invent recommendations" in DOCUMENT_WRITING_PROMPT
+    assert "Omit optional content when no useful user-supported information exists" in (
+        DOCUMENT_WRITING_PROMPT
+    )
+
+
+def test_writing_prompt_prioritises_accuracy_over_filling_sections() -> None:
+    prompt = " ".join(DOCUMENT_WRITING_PROMPT.split())
+
+    assert "Factual accuracy takes precedence over filling every section" in prompt
+    assert "Never add filler paragraphs, bullets or placeholder text" in prompt
+    assert "Include at least one paragraph or bullet in every section" not in prompt
+    assert "planned section headings are still required" in prompt
+    assert "use only a justified placeholder" in prompt
+    assert "no paragraph or bullet when its information is fully" in prompt
+    assert "structured fields" in prompt
+
+
 async def test_writer_uses_json_mode_structured_output() -> None:
     plan = _plan()
     model = FakeStructuredModel(_content(plan))
@@ -215,8 +246,18 @@ async def test_writer_rejects_document_type_mismatch() -> None:
         await writer.generate("Create the report", plan)
 
 
-def test_writing_messages_include_facts_assumptions_and_tool_results() -> None:
-    plan = _plan()
+def test_writing_messages_exclude_agent_only_planning() -> None:
+    plan = _plan().model_copy(
+        update={
+            "conflicts": [
+                RequirementConflict(
+                    requirements=["Four-week rollout", "Three-week cleanup"],
+                    impact="The dates conflict.",
+                    resolution="Use a phased pilot rollout.",
+                )
+            ]
+        }
+    )
 
     messages = build_writing_messages(
         "Create the quarterly report",
@@ -228,10 +269,16 @@ def test_writing_messages_include_facts_assumptions_and_tool_results() -> None:
     prompt = messages[1].content
     assert "Create the quarterly report" in prompt
     assert "Revenue was confirmed at 10 units." in prompt
-    assert "A one-page summary is appropriate." in prompt
-    assert "What is the approved budget?" in prompt
+    assert "Budget" in prompt
     assert "Calculated total: 42" in prompt
-    assert "[Budget]" not in prompt
+    assert "Overview" in prompt
+    assert "Risks" in prompt
+
+    assert "A one-page summary is appropriate." not in prompt
+    assert "What is the approved budget?" not in prompt
+    assert "The dates conflict." not in prompt
+    assert "Use a phased pilot rollout." not in prompt
+    assert "Describe known risks." not in prompt
 
 
 async def test_writer_keeps_placeholders_in_generated_content() -> None:

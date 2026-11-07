@@ -128,6 +128,7 @@ _STRUCTURE_GUIDANCE = "\n".join(
     for document_type, sections in DOCUMENT_STRUCTURE_GUIDANCE.items()
 )
 _JSON_SCHEMA = json.dumps(DocumentPlan.model_json_schema(), indent=2)
+MAX_PLANNING_ATTEMPTS = 2
 
 PLANNING_SYSTEM_PROMPT = f"""You are a document-planning assistant. You plan
 structured business documents; you do not write their content.
@@ -166,6 +167,38 @@ Planning rules:
   specific clarification questions instead of fabricating details.
 - Produce at least one section with a clear heading, purpose and key points.
 - Return only a JSON object matching the schema. Do not include markdown.
+
+Document date and version:
+- Extract document_date and document_version only when the user explicitly
+  supplies a document date or document version.
+- Do not use meeting dates, milestone dates or action-item due dates as the
+  document date.
+- Leave document_date or document_version null when they are not explicit.
+
+Execution tasks:
+- Create a request-specific list of meaningful work tasks. Do not merely list
+  internal framework lifecycle steps.
+- Each task must have a unique stable snake_case id, a concise title, a
+  description, and one execution stage from the schema.
+- Multiple tasks may share the same stage.
+- Include at least one task for document_writing, validation and
+  docx_generation.
+- Keep optional tool_execution and revision tasks only when relevant to the
+  request.
+- Do not create artificial tasks for final-response generation. Do not force a
+  finalization task when it adds no meaningful user-facing work.
+
+Conflicts:
+- For each genuine conflict in the requirements, record the conflicting
+  requirements, their practical impact, and the assumption or resolution you
+  selected. Leave resolution null when unresolved.
+- Do not invent conflicts when the request is consistent.
+
+Placeholders:
+- Put each planned placeholder in the relevant section's placeholders list
+  using its exact bracketed text and a reason explaining why the value is
+  unavailable or why the placeholder is necessary.
+- Do not use placeholders for facts that were explicitly supplied.
 """
 
 
@@ -194,22 +227,28 @@ class DocumentPlanner:
             HumanMessage(content=request),
         ]
 
-        try:
-            result = await self._structured_model.ainvoke(messages)
-        except Exception as exc:
+        last_error: Exception | None = None
+        for _ in range(MAX_PLANNING_ATTEMPTS):
+            try:
+                result = await self._structured_model.ainvoke(messages)
+            except Exception as exc:
+                last_error = exc
+                continue
+
+            try:
+                if isinstance(result, DocumentPlan):
+                    return result
+                return DocumentPlan.model_validate(result)
+            except Exception as exc:
+                last_error = exc
+
+        if last_error is not None:
             raise PlanningError(
                 "The planning model could not produce a valid document plan."
-            ) from exc
-
-        if isinstance(result, DocumentPlan):
-            return result
-
-        try:
-            return DocumentPlan.model_validate(result)
-        except Exception as exc:
-            raise PlanningError(
-                "The planning model returned an invalid document plan."
-            ) from exc
+            ) from last_error
+        raise PlanningError(
+            "The planning model could not produce a valid document plan."
+        )
 
 
 def build_document_planner(model: BaseChatModel | None = None) -> DocumentPlanner:

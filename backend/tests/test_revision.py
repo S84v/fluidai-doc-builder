@@ -13,10 +13,12 @@ from backend.app.agent import (
     DocumentType,
     DocumentWriter,
     PlanSection,
+    RequirementConflict,
     ValidationIssue,
 )
 from backend.app.agent.document_writer import build_revision_messages
 from backend.app.agent.validation import IssueSeverity
+from backend.tests.plan_factory import make_execution_tasks
 
 
 class FakeRunnable:
@@ -55,6 +57,7 @@ class FakeStructuredModel:
 
 def _plan() -> DocumentPlan:
     return DocumentPlan(
+        execution_tasks=make_execution_tasks(),
         document_type=DocumentType.BUSINESS_REPORT,
         title="Status Report",
         objective="Report progress.",
@@ -212,6 +215,54 @@ def test_revision_messages_exclude_internal_reasoning() -> None:
 
     assert "tool result" in messages[1].content
     assert "reasoning_content" not in messages[1].content
+
+
+def test_revision_messages_exclude_agent_only_planning() -> None:
+    plan = _plan().model_copy(
+        update={
+            "conflicts": [
+                RequirementConflict(
+                    requirements=["Four-week rollout", "Three-week cleanup"],
+                    impact="The dates conflict.",
+                    resolution="Use a phased pilot rollout.",
+                )
+            ]
+        }
+    )
+    messages = build_revision_messages(
+        "Create the report",
+        plan,
+        _content(plan),
+        [_blocking_issue()],
+        ["tool result"],
+    )
+
+    prompt = messages[1].content
+    assert "A one-page summary is appropriate." not in prompt
+    assert "The dates conflict." not in prompt
+    assert "Use a phased pilot rollout." not in prompt
+    assert "Introduce the report." not in prompt
+
+
+def test_revision_prompt_preserves_factuality_and_placeholders() -> None:
+    messages = build_revision_messages(
+        "request",
+        _plan(),
+        _content(_plan()),
+        [_blocking_issue()],
+        [],
+    )
+    system_prompt = messages[0].content
+
+    assert "original user request remains the sole source" in system_prompt
+    assert "Never introduce names, organisations, dates, figures" in system_prompt
+    assert "Do not convert planning assumptions" in system_prompt
+    assert "Do not replace a justified placeholder with an invented value" in (
+        system_prompt
+    )
+    assert "Do not add filler paragraphs" in system_prompt
+    assert "keep factual accuracy ahead of completeness" in system_prompt
+    assert "An empty section body is acceptable" in system_prompt
 
 
 def asyncio_run(coroutine: Any) -> Any:

@@ -20,13 +20,28 @@ from backend.app.agent.docx_generator import (
     DEFAULT_OUTPUT_DIR,
     DocxGenerationError,
     DocxGenerator,
+    GeneratedDocument,
 )
 from backend.app.agent.graph import (
     build_agent_graph,
     compile_agent_graph,
     run_agent,
 )
-from backend.app.agent.models import DocumentPlan, DocumentType, PlanSection
+from backend.app.agent.models import (
+    EXECUTION_STAGE_ORDER,
+    OPTIONAL_EXECUTION_STAGES,
+    DocumentPlan,
+    DocumentType,
+    ExecutionStage,
+    ExecutionTask,
+    PlanPlaceholder,
+    PlanSection,
+    RequirementConflict,
+)
+from backend.app.agent.placeholders import (
+    PlaceholderVerificationError,
+    RenderedPlaceholder,
+)
 from backend.app.agent.planning import (
     DocumentPlanner,
     PlanningError,
@@ -77,14 +92,23 @@ __all__ = [
     "DocumentWriter",
     "DocxGenerationError",
     "DocxGenerator",
+    "EXECUTION_STAGE_ORDER",
+    "ExecutionStage",
+    "ExecutionTask",
+    "GeneratedDocument",
     "IssueSeverity",
     "MAX_REVISION_ATTEMPTS",
     "MAX_TOOL_ROUNDS",
     "MeetingDetails",
     "Milestone",
+    "OPTIONAL_EXECUTION_STAGES",
+    "PlaceholderVerificationError",
+    "PlanPlaceholder",
     "PlanSection",
     "PlanningError",
+    "RenderedPlaceholder",
     "Requirement",
+    "RequirementConflict",
     "ReviewError",
     "ReviewOutput",
     "SopStep",

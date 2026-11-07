@@ -14,10 +14,12 @@ from backend.app.agent import (
     build_tool_selector,
 )
 from backend.app.agent.tool_selection import build_tool_selection_messages
+from backend.tests.plan_factory import make_execution_tasks
 
 
 def _plan() -> DocumentPlan:
     return DocumentPlan(
+        execution_tasks=make_execution_tasks(),
         document_type=DocumentType.BUSINESS_REPORT,
         title="Status Report",
         objective="Plan a report.",

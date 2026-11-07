@@ -6,6 +6,7 @@ from backend.app.agent import (
     ContentSection,
     DocumentContent,
     DocumentPlan,
+    GeneratedDocument,
     ValidationReport,
 )
 
@@ -58,11 +59,21 @@ class StaticDocxGenerator:
         self._error = error
         self.calls: list[tuple[DocumentContent, str]] = []
 
-    def generate(self, content: DocumentContent, request: str) -> str:
+    def generate(
+        self,
+        content: DocumentContent,
+        request: str,
+        plan: DocumentPlan | None = None,
+        today: object | None = None,
+    ) -> GeneratedDocument:
         self.calls.append((content, request))
         if self._error is not None:
             raise self._error
-        return self._filename
+        return GeneratedDocument(
+            filename=self._filename,
+            document_date="2026-11-07",
+            document_version="1.0",
+        )
 
 
 class StaticValidator:

@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from backend.app.agent.document_content import DocumentContent
 from backend.app.agent.models import DocumentPlan, DocumentType
+from backend.app.agent.placeholders import TEMPLATE_PLACEHOLDER_REASONS
 from backend.app.services.llm import build_chat_model
 
 MAX_REVISION_ATTEMPTS = 2
@@ -106,6 +107,28 @@ def _headings(content: DocumentContent) -> list[str]:
     return [section.heading for section in content.sections]
 
 
+def _has_structured_content(content: DocumentContent) -> bool:
+    """Return True when type-specific structured fields carry real content."""
+    meeting = content.meeting
+    meeting_has_data = meeting is not None and any(
+        (
+            meeting.date,
+            meeting.time,
+            meeting.location,
+            meeting.facilitator,
+            meeting.attendees,
+        )
+    )
+    return bool(
+        meeting_has_data
+        or content.action_items
+        or content.milestones
+        or content.sop_steps
+        or content.requirements
+        or content.components
+    )
+
+
 def _has_heading(content: DocumentContent, keywords: tuple[str, ...]) -> bool:
     headings = " ".join(_normalize_heading(heading) for heading in _headings(content))
     return any(keyword in headings for keyword in keywords)
@@ -140,15 +163,38 @@ def validate_document_structure(
             )
         )
 
+    # A planned section may legitimately have no body when its information is
+    # represented by structured fields (for example meeting details or action
+    # items) or when optional content is omitted. Only a document with no
+    # substantive content anywhere is a blocking structural failure.
+    has_section_content = any(
+        section.paragraphs or section.bullets for section in content.sections
+    )
+    if not has_section_content and not _has_structured_content(content):
+        issues.append(
+            _issue(
+                "empty_document",
+                "The generated document contains no substantive content.",
+                IssueSeverity.BLOCKING,
+                suggestion=(
+                    "Add supported content, justified placeholders, or populated "
+                    "structured fields; do not add filler."
+                ),
+            )
+        )
+
     for section in content.sections:
         if not section.paragraphs and not section.bullets:
             issues.append(
                 _issue(
                     "empty_section",
-                    "A generated section contains no paragraphs or bullets.",
-                    IssueSeverity.BLOCKING,
+                    "A generated section has no paragraph or bullet.",
+                    IssueSeverity.WARNING,
                     section=section.heading,
-                    suggestion="Add substantive content or an explicit placeholder.",
+                    suggestion=(
+                        "Keep the heading and omit optional content, or add a "
+                        "justified placeholder for required missing information."
+                    ),
                 )
             )
 
@@ -354,6 +400,111 @@ def validate_document_structure(
                     )
 
     text_values = list(_iter_strings(content.model_dump()))
+    plan_sections_by_heading = {
+        _normalize_heading(section.heading): section for section in plan.sections
+    }
+    for section in content.sections:
+        plan_section = plan_sections_by_heading.get(_normalize_heading(section.heading))
+        declared_placeholders = (
+            {placeholder.text for placeholder in plan_section.placeholders}
+            if plan_section is not None
+            else set()
+        )
+        for text in [*section.paragraphs, *section.bullets]:
+            for placeholder in _PLACEHOLDER_RE.findall(text):
+                if placeholder not in declared_placeholders:
+                    issues.append(
+                        _issue(
+                            "unexplained_placeholder",
+                            f"Placeholder {placeholder} is not declared for "
+                            f"section {section.heading}.",
+                            IssueSeverity.BLOCKING,
+                            section=section.heading,
+                            suggestion=(
+                                "Declare this placeholder for this section in "
+                                "the plan or remove the unexplained placeholder."
+                            ),
+                        )
+                    )
+
+    # Custom plan placeholders are only accepted in actual structured content
+    # fields that render in document tables. Unrelated title/metadata fields may
+    # use deterministic template placeholders only.
+    all_declared_placeholders = {
+        placeholder.text
+        for plan_section in plan.sections
+        for placeholder in plan_section.placeholders
+    }
+    structured_values = content.model_dump(
+        include={
+            "meeting",
+            "action_items",
+            "milestones",
+            "sop_steps",
+            "requirements",
+            "components",
+        }
+    )
+    seen_unexplained: set[str] = set()
+    for value in _iter_strings(structured_values):
+        for placeholder in _PLACEHOLDER_RE.findall(value):
+            if (
+                placeholder in all_declared_placeholders
+                or placeholder in TEMPLATE_PLACEHOLDER_REASONS
+                or placeholder in seen_unexplained
+            ):
+                continue
+            seen_unexplained.add(placeholder)
+            issues.append(
+                _issue(
+                    "unexplained_placeholder",
+                    f"Placeholder {placeholder} is not declared in the approved plan.",
+                    IssueSeverity.BLOCKING,
+                    suggestion=(
+                        "Declare this placeholder in the plan, use a known "
+                        "template placeholder, or replace it with supported "
+                        "content."
+                    ),
+                )
+            )
+
+    metadata_values = {
+        "audience": content.audience,
+        "metadata": (
+            content.metadata.model_dump() if content.metadata is not None else None
+        ),
+    }
+    seen_metadata_placeholders: set[str] = set()
+    for value in _iter_strings(metadata_values):
+        for placeholder in _PLACEHOLDER_RE.findall(value):
+            if (
+                placeholder in TEMPLATE_PLACEHOLDER_REASONS
+                or placeholder in seen_metadata_placeholders
+            ):
+                continue
+            seen_metadata_placeholders.add(placeholder)
+            issues.append(
+                _issue(
+                    "unexplained_placeholder",
+                    f"Placeholder {placeholder} is not valid in document metadata.",
+                    IssueSeverity.BLOCKING,
+                    suggestion=(
+                        "Use a deterministic metadata placeholder such as "
+                        "[Audience], [Date] or [Version], or remove it."
+                    ),
+                )
+            )
+
+    for placeholder in dict.fromkeys(_PLACEHOLDER_RE.findall(content.title)):
+        issues.append(
+            _issue(
+                "unexplained_placeholder",
+                f"Placeholder {placeholder} is not valid in the document title.",
+                IssueSeverity.BLOCKING,
+                suggestion="Use a literal title or remove the placeholder.",
+            )
+        )
+
     if any(_EMPTY_PLACEHOLDER_RE.search(value) for value in text_values):
         issues.append(
             _issue(
@@ -392,18 +543,26 @@ Evaluate:
   and important key points.
 - Logical consistency, contradictions between sections, and unsupported factual
   claims.
-- Whether assumptions are presented as confirmed facts.
+- Invented names, organisations, people, roles, locations, dates, financial
+  figures, commitments, policies, targets or technical specifications.
+- Assumptions, conflict resolutions or planner suggestions presented as
+  confirmed facts.
+- Recommendations or proposed content that the user did not request.
+- Statements that materially change the meaning of the original request.
 - Whether missing details use appropriate bracketed placeholders.
 - Whether the selected document type and structure are appropriate.
 
 Evidence rules:
-- Use the original request and tool results as evidence for factual claims.
+- The original user request is the primary source of factual information.
+- Tool results may support only values they deterministically produced.
 - Do not blindly trust facts supplied by the planning model.
-- Treat planning assumptions as assumptions, not confirmed facts.
+- Treat planning assumptions and conflict resolutions as non-facts.
 - Do not demand external factual verification; no external research tool exists.
 - Distinguish factual claims from proposed recommendations and clearly labelled
   assumptions.
 - Do not penalize legitimate placeholders for missing information.
+- Do not penalize an empty section body when its information is fully represented
+  by populated structured fields or when optional content is intentionally omitted.
 - Use blocking severity only for material problems that should prevent delivery.
 - Use warning severity for non-blocking improvements.
 """
@@ -415,6 +574,8 @@ class ReviewError(RuntimeError):
 
 class DocumentReviewer:
     """LLM review of generated content against the request and plan."""
+
+    MAX_REVIEW_ATTEMPTS = 2
 
     def __init__(self, model: BaseChatModel):
         self._structured_model = model.with_structured_output(
@@ -430,23 +591,34 @@ class DocumentReviewer:
         content: DocumentContent,
         tool_results: Sequence[str] = (),
     ) -> ReviewOutput:
-        try:
-            result = await self._structured_model.ainvoke(
-                build_review_messages(request, plan, content, tool_results)
-            )
-        except Exception as exc:
-            raise ReviewError(
-                "The review model could not produce a valid review."
-            ) from exc
+        messages = build_review_messages(request, plan, content, tool_results)
+        last_error: Exception | None = None
+        invalid_output = False
 
-        if isinstance(result, ReviewOutput):
-            return result
-        try:
-            return ReviewOutput.model_validate(result)
-        except Exception as exc:
+        for _ in range(self.MAX_REVIEW_ATTEMPTS):
+            try:
+                result = await self._structured_model.ainvoke(messages)
+            except Exception as exc:
+                last_error = exc
+                invalid_output = False
+                continue
+
+            if isinstance(result, ReviewOutput):
+                return result
+
+            try:
+                return ReviewOutput.model_validate(result)
+            except Exception as exc:
+                last_error = exc
+                invalid_output = True
+
+        if invalid_output:
             raise ReviewError(
                 "The review model returned invalid structured review output."
-            ) from exc
+            ) from last_error
+        raise ReviewError(
+            "The review model could not produce a valid review."
+        ) from last_error
 
 
 def _format_items(items: Sequence[str]) -> str:

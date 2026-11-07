@@ -13,7 +13,13 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from backend.app.agent.graph import GENERIC_FAILURE_RESPONSE
+from backend.app.agent.models import ExecutionStage
 from backend.app.agent.state import create_initial_state
+from backend.app.api.progress import (
+    NODE_STAGE_MAP,
+    TERMINAL_FAILURE_STAGES,
+    PlanProgressTracker,
+)
 
 DOCX_MEDIA_TYPE = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -25,17 +31,13 @@ SSE_HEADERS = {
     "Connection": "keep-alive",
 }
 
-PROGRESS_MESSAGES = {
-    "prepare_request": "Understanding request...",
-    "plan_document": "Planning document...",
-    "select_tools": "Selecting tools...",
-    "tools": "Processing tool results...",
-    "write_document": "Writing document...",
-    "validate_document": "Validating document...",
-    "revise_document": "Revising document...",
-    "generate_docx": "Generating DOCX document...",
-    "final_response": "Finalizing response...",
-}
+_KNOWN_NODES = (
+    set(NODE_STAGE_MAP)
+    | set(TERMINAL_FAILURE_STAGES)
+    | {
+        "final_response",
+    }
+)
 
 GraphFactory = Callable[[], Any]
 
@@ -48,35 +50,147 @@ def _sse_event(event: str, data: dict[str, Any]) -> bytes:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode()
 
 
+def _serialize_placeholders(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for placeholder in value:
+        if isinstance(placeholder, dict):
+            result.append(placeholder)
+        elif hasattr(placeholder, "model_dump"):
+            result.append(placeholder.model_dump())
+    return result
+
+
 async def stream_agent_events(
     graph_factory: GraphFactory,
     request: str,
 ) -> AsyncIterator[bytes]:
-    """Stream safe progress and terminal events for one graph invocation."""
+    """Stream safe plan, task progress and terminal events for one run."""
     snapshot: dict[str, Any] = {}
+    tracker = PlanProgressTracker()
+    plan_sent = False
     try:
         graph = graph_factory()
-        async for update in graph.astream(
+        async for event in graph.astream_events(
             create_initial_state(request),
-            stream_mode="updates",
+            version="v2",
         ):
-            if not isinstance(update, dict):
+            if event.get("event") not in ("on_chain_start", "on_chain_end"):
                 continue
-            for node_name, node_update in update.items():
-                if not isinstance(node_update, dict):
-                    continue
+
+            metadata = event.get("metadata", {})
+            node_name = metadata.get("langgraph_node")
+            if (
+                not isinstance(node_name, str)
+                or node_name not in _KNOWN_NODES
+                or event.get("name") != node_name
+            ):
+                continue
+
+            is_start = event["event"] == "on_chain_start"
+            node_output = (
+                event.get("data", {}).get("output")
+                if event["event"] == "on_chain_end"
+                else None
+            )
+
+            if isinstance(node_output, dict):
                 for key in ("status", "output_filename", "terminal_reason"):
-                    if key in node_update:
-                        snapshot[key] = node_update[key]
+                    if key in node_output:
+                        snapshot[key] = node_output[key]
 
-                progress = PROGRESS_MESSAGES.get(node_name)
-                if progress:
-                    yield _sse_event("progress", {"message": progress})
+            if node_name == "prepare_request":
+                if is_start:
+                    tracker.start_stage(ExecutionStage.REQUEST_UNDERSTANDING)
+                else:
+                    tracker.complete_stage(
+                        ExecutionStage.REQUEST_UNDERSTANDING,
+                        node_output,
+                    )
+                continue
 
-                if node_name == "final_response":
-                    final_text = node_update.get("final_response")
+            if node_name == "plan_document":
+                if is_start:
+                    tracker.start_stage(ExecutionStage.PLANNING)
+                else:
+                    tracker.complete_stage(ExecutionStage.PLANNING, node_output)
+                    plan = (
+                        node_output.get("plan")
+                        if isinstance(node_output, dict)
+                        else None
+                    )
+                    if plan is not None and not plan_sent:
+                        yield _sse_event("plan", tracker.attach_plan(plan))
+                        plan_sent = True
+                continue
+
+            if node_name == "final_response":
+                if not is_start and isinstance(node_output, dict):
+                    final_text = node_output.get("final_response")
                     if isinstance(final_text, str) and final_text.strip():
                         snapshot["final_response"] = final_text
+                continue
+
+            if node_name in TERMINAL_FAILURE_STAGES:
+                if not is_start:
+                    progress = tracker.fail_stage(TERMINAL_FAILURE_STAGES[node_name])
+                    if progress is not None:
+                        yield _sse_event("progress", progress)
+                continue
+
+            stage = NODE_STAGE_MAP.get(node_name)
+            if stage is None:
+                continue
+
+            if is_start:
+                if stage is ExecutionStage.DOCUMENT_WRITING:
+                    skipped = tracker.skip_stage(ExecutionStage.TOOL_EXECUTION)
+                    if skipped is not None:
+                        yield _sse_event("progress", skipped)
+                elif stage is ExecutionStage.DOCX_GENERATION:
+                    skipped = tracker.skip_stage(ExecutionStage.REVISION)
+                    if skipped is not None:
+                        yield _sse_event("progress", skipped)
+
+                progress = tracker.start_stage(stage)
+                if progress is not None:
+                    yield _sse_event("progress", progress)
+            else:
+                progress = tracker.complete_stage(stage, node_output)
+                if progress is not None:
+                    yield _sse_event("progress", progress)
+
+                if node_name == "generate_docx" and isinstance(node_output, dict):
+                    generated_filename = node_output.get("output_filename")
+                    if (
+                        node_output.get("status") == "docx_generation"
+                        and isinstance(generated_filename, str)
+                        and DOCUMENT_FILENAME_RE.fullmatch(generated_filename)
+                    ):
+                        document_date = node_output.get("document_date")
+                        document_version = node_output.get("document_version")
+                        if (
+                            isinstance(document_date, str)
+                            and document_date
+                            and isinstance(document_version, str)
+                            and document_version
+                        ):
+                            yield _sse_event(
+                                "metadata",
+                                {
+                                    "document_date": document_date,
+                                    "document_version": document_version,
+                                },
+                            )
+                        yield _sse_event(
+                            "placeholders",
+                            {
+                                "placeholders": _serialize_placeholders(
+                                    node_output.get("rendered_placeholders")
+                                )
+                            },
+                        )
 
         status = snapshot.get("status")
         filename = snapshot.get("output_filename")
@@ -105,6 +219,9 @@ async def stream_agent_events(
     except asyncio.CancelledError:
         raise
     except Exception:
+        progress = tracker.fail_active()
+        if progress is not None:
+            yield _sse_event("progress", progress)
         yield _sse_event("error", {"message": GENERIC_FAILURE_RESPONSE})
 
 

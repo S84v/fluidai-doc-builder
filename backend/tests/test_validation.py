@@ -6,10 +6,13 @@ import pytest
 from langchain_core.messages import BaseMessage
 
 from backend.app.agent import (
+    ActionItem,
     ContentSection,
     DocumentContent,
     DocumentPlan,
     DocumentType,
+    MeetingDetails,
+    PlanPlaceholder,
     PlanSection,
     ReviewError,
     ReviewOutput,
@@ -23,6 +26,7 @@ from backend.app.agent.validation import (
     build_review_messages,
     validate_document_structure,
 )
+from backend.tests.plan_factory import make_execution_tasks
 
 
 class FakeRunnable:
@@ -89,6 +93,7 @@ def _plan(
     missing_information: list[str] | None = None,
 ) -> DocumentPlan:
     return DocumentPlan(
+        execution_tasks=make_execution_tasks(),
         document_type=document_type,
         title="Test Document",
         objective="Test the document.",
@@ -153,23 +158,75 @@ def test_document_type_and_section_mismatches_are_blocking() -> None:
     assert "section_structure_mismatch" in _codes(order_report)
 
 
-def test_empty_section_is_blocking() -> None:
+def test_document_with_only_empty_sections_is_blocking() -> None:
     plan = _plan(headings=("Overview",))
-    empty_section = ContentSection.model_construct(
-        heading="Overview",
-        paragraphs=[],
-        bullets=[],
-    )
-    content = DocumentContent.model_construct(
+    content = DocumentContent(
         document_type=DocumentType.BUSINESS_REPORT,
         title="Test Document",
-        sections=[empty_section],
+        sections=[ContentSection(heading="Overview")],
     )
 
     report = ValidationReport(issues=validate_document_structure(content, plan))
 
     assert report.passed is False
+    assert "empty_document" in _codes(report)
+    empty_section = next(
+        issue for issue in report.issues if issue.code == "empty_section"
+    )
+    assert empty_section.severity is IssueSeverity.WARNING
+
+
+def test_empty_section_is_warning_when_other_sections_have_content() -> None:
+    plan = _plan(headings=("Overview", "Appendix"))
+    content = DocumentContent(
+        document_type=DocumentType.BUSINESS_REPORT,
+        title="Test Document",
+        sections=[
+            ContentSection(heading="Overview", paragraphs=["Supported content."]),
+            ContentSection(heading="Appendix"),
+        ],
+    )
+
+    report = ValidationReport(issues=validate_document_structure(content, plan))
+
+    assert report.passed is True
     assert "empty_section" in _codes(report)
+    assert "empty_document" not in _codes(report)
+
+
+def test_meeting_minutes_allow_empty_sections_for_structured_content() -> None:
+    headings = ("Meeting Details", "Agenda", "Decisions", "Action Items")
+    plan = _plan(DocumentType.MEETING_MINUTES, headings)
+    content = DocumentContent(
+        document_type=DocumentType.MEETING_MINUTES,
+        title=plan.title,
+        meeting=MeetingDetails(date="2026-11-06", attendees=["Anna", "Ben"]),
+        action_items=[ActionItem(action="Send notes", owner="Anna")],
+        sections=[ContentSection(heading=heading) for heading in headings],
+    )
+
+    report = ValidationReport(issues=validate_document_structure(content, plan))
+
+    assert report.passed is True
+    assert "empty_document" not in _codes(report)
+    assert "empty_section" in _codes(report)
+
+
+def test_required_section_with_only_a_justified_placeholder_is_accepted() -> None:
+    plan = _plan(headings=("Budget",))
+    plan.sections[0].placeholders = [
+        PlanPlaceholder(
+            text="[Budget]",
+            reason="The approved budget was not supplied.",
+        )
+    ]
+    content = _content(plan)
+    content.sections[0].paragraphs = ["[Budget]"]
+
+    report = ValidationReport(issues=validate_document_structure(content, plan))
+
+    assert report.passed is True
+    assert "empty_section" not in _codes(report)
 
 
 def test_sop_requires_numbered_steps() -> None:
@@ -260,6 +317,159 @@ def test_placeholders_are_accepted_and_missing_placeholders_warn() -> None:
     assert without_placeholder.passed is True
 
 
+def test_unexplained_content_placeholder_is_blocking() -> None:
+    plan = _plan(headings=("Overview",))
+    content = _content(plan)
+    content.sections[0].paragraphs = ["Unknown: [Mystery]"]
+
+    report = ValidationReport(issues=validate_document_structure(content, plan))
+
+    assert report.passed is False
+    assert "unexplained_placeholder" in _codes(report)
+
+
+def test_explained_content_placeholder_is_accepted() -> None:
+    plan = _plan(headings=("Budget",))
+    plan.sections[0].placeholders = [
+        PlanPlaceholder(
+            text="[Budget]",
+            reason="The approved budget was not supplied.",
+        )
+    ]
+    content = _content(plan)
+    content.sections[0].paragraphs = ["Budget: [Budget]"]
+
+    report = ValidationReport(issues=validate_document_structure(content, plan))
+
+    assert report.passed is True
+    assert "unexplained_placeholder" not in _codes(report)
+
+
+def test_declared_structured_placeholder_is_accepted() -> None:
+    plan = _plan(DocumentType.MEETING_MINUTES, ("Action Items",))
+    plan.sections[0].placeholders = [
+        PlanPlaceholder(
+            text="[Budget]",
+            reason="The approved budget was not supplied.",
+        )
+    ]
+    content = _content(
+        plan,
+        action_items=[ActionItem(action="Review [Budget]")],
+    )
+
+    report = ValidationReport(issues=validate_document_structure(content, plan))
+
+    assert report.passed is True
+    assert "unexplained_placeholder" not in _codes(report)
+
+
+def test_known_template_placeholder_in_structured_field_is_accepted() -> None:
+    plan = _plan(DocumentType.MEETING_MINUTES, ("Action Items",))
+    content = _content(
+        plan,
+        action_items=[ActionItem(action="Send notes", owner="[Owner]")],
+    )
+
+    report = ValidationReport(issues=validate_document_structure(content, plan))
+
+    assert report.passed is True
+    assert "unexplained_placeholder" not in _codes(report)
+
+
+def test_plan_declared_placeholder_in_unrelated_metadata_is_blocking() -> None:
+    plan = _plan(headings=("Budget",))
+    plan.sections[0].placeholders = [
+        PlanPlaceholder(
+            text="[Budget]",
+            reason="The approved budget was not supplied.",
+        )
+    ]
+    content = _content(plan)
+    content.audience = "[Budget]"
+
+    report = ValidationReport(issues=validate_document_structure(content, plan))
+
+    assert report.passed is False
+    assert "unexplained_placeholder" in _codes(report)
+
+
+def test_plan_declared_placeholder_in_title_is_blocking() -> None:
+    plan = _plan(headings=("Budget",))
+    plan.sections[0].placeholders = [
+        PlanPlaceholder(
+            text="[Budget]",
+            reason="The approved budget was not supplied.",
+        )
+    ]
+    content = _content(plan)
+    content.title = "Report for [Budget]"
+
+    report = ValidationReport(issues=validate_document_structure(content, plan))
+
+    assert report.passed is False
+    assert "unexplained_placeholder" in _codes(report)
+
+
+def test_template_metadata_placeholder_is_accepted() -> None:
+    plan = _plan(headings=("Overview",))
+    content = _content(plan)
+    content.audience = "[Audience]"
+
+    report = ValidationReport(issues=validate_document_structure(content, plan))
+
+    assert report.passed is True
+    assert "unexplained_placeholder" not in _codes(report)
+
+
+def test_undeclared_metadata_placeholder_is_blocking() -> None:
+    plan = _plan(headings=("Overview",))
+    content = _content(plan)
+    content.audience = "[Mystery]"
+
+    report = ValidationReport(issues=validate_document_structure(content, plan))
+
+    assert report.passed is False
+    assert "unexplained_placeholder" in _codes(report)
+
+
+def test_placeholder_declared_in_section_a_is_not_allowed_in_section_b() -> None:
+    plan = _plan(headings=("Alpha", "Beta"))
+    plan.sections[0].placeholders = [
+        PlanPlaceholder(text="[Budget]", reason="Alpha budget reason.")
+    ]
+    content = _content(plan)
+    content.sections[0].paragraphs = ["Budget: [Budget]"]
+    content.sections[1].paragraphs = ["Budget: [Budget]"]
+
+    report = ValidationReport(issues=validate_document_structure(content, plan))
+
+    assert report.passed is False
+    unexplained = [
+        issue for issue in report.issues if issue.code == "unexplained_placeholder"
+    ]
+    assert len(unexplained) == 1
+    assert unexplained[0].section == "Beta"
+
+
+def test_same_placeholder_declared_in_both_sections_is_accepted() -> None:
+    plan = _plan(headings=("Alpha", "Beta"))
+    plan.sections[0].placeholders = [
+        PlanPlaceholder(text="[Budget]", reason="Alpha budget reason.")
+    ]
+    plan.sections[1].placeholders = [
+        PlanPlaceholder(text="[Budget]", reason="Beta budget reason.")
+    ]
+    content = _content(plan)
+    content.sections[0].paragraphs = ["Budget: [Budget]", "Again: [Budget]"]
+    content.sections[1].paragraphs = ["Budget: [Budget]"]
+
+    report = ValidationReport(issues=validate_document_structure(content, plan))
+
+    assert report.passed is True
+    assert "unexplained_placeholder" not in _codes(report)
+
+
 def test_validator_skips_reviewer_when_deterministic_issues_block() -> None:
     plan = _plan(DocumentType.SOP, ("Procedure Steps",))
     content = _content(plan)
@@ -311,8 +521,17 @@ def test_reviewer_uses_json_mode_and_receives_evidence() -> None:
     prompt = model.calls[0][1].content
     assert "Original request" in prompt
     assert "17 * 23 = 391" in prompt
-    assert "Do not blindly trust" in model.calls[0][0].content
-    assert "Do not penalize legitimate placeholders" in model.calls[0][0].content
+    system_prompt = model.calls[0][0].content
+    assert "Do not blindly trust" in system_prompt
+    assert "Do not penalize legitimate placeholders" in system_prompt
+    assert "Do not penalize an empty section body" in system_prompt
+    assert "original user request is the primary source" in system_prompt
+    assert "Invented names, organisations" in system_prompt
+    assert "Recommendations or proposed content" in system_prompt
+    assert "materially change the meaning" in system_prompt
+    assert "Treat planning assumptions and conflict resolutions as non-facts" in (
+        system_prompt
+    )
 
 
 def test_reviewer_wraps_model_failure() -> None:

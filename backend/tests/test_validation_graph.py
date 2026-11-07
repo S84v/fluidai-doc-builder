@@ -10,6 +10,7 @@ from backend.app.agent import (
     DocumentContent,
     DocumentPlan,
     DocumentType,
+    GeneratedDocument,
     PlanSection,
     ReviewError,
     ValidationIssue,
@@ -22,10 +23,12 @@ from backend.app.agent.graph import (
     VALIDATION_FAILURE_RESPONSE,
 )
 from backend.app.agent.validation import MAX_REVISION_ATTEMPTS, IssueSeverity
+from backend.tests.plan_factory import make_execution_tasks
 
 
 def _plan() -> DocumentPlan:
     return DocumentPlan(
+        execution_tasks=make_execution_tasks(),
         document_type=DocumentType.BUSINESS_REPORT,
         title="Status Report",
         objective="Report progress.",
@@ -137,9 +140,19 @@ class RecordingDocx:
     def __init__(self) -> None:
         self.calls = 0
 
-    def generate(self, content: DocumentContent, request: str) -> str:
+    def generate(
+        self,
+        content: DocumentContent,
+        request: str,
+        plan: DocumentPlan | None = None,
+        today: object | None = None,
+    ) -> GeneratedDocument:
         self.calls += 1
-        return "validated-000000000000.docx"
+        return GeneratedDocument(
+            filename="validated-000000000000.docx",
+            document_date="2026-11-07",
+            document_version="1.0",
+        )
 
 
 def _run(

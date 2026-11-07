@@ -1,5 +1,6 @@
 """Tests for document-type-specific DOCX templates."""
 
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -40,8 +41,12 @@ def _content(
 
 
 def _generate(tmp_path: Path, content: DocumentContent) -> Document:
-    filename = DocxGenerator(tmp_path).generate(content, "Create the document")
-    return Document(tmp_path / filename)
+    generated = DocxGenerator(tmp_path).generate(
+        content,
+        "Create the document",
+        today=date(2026, 11, 7),
+    )
+    return Document(tmp_path / generated.filename)
 
 
 def _table_rows(document: Document, table_index: int) -> list[tuple[str, ...]]:
@@ -83,6 +88,8 @@ def test_business_proposal_has_cover_details_and_timeline(tmp_path: Path) -> Non
     assert document.paragraphs[0].text == content.title
     assert any('w:type="page"' in p._p.xml for p in document.paragraphs)
     assert ("Prepared For", "Atlas Leadership") in _table_rows(document, 0)
+    assert ("Document Date", "2026-11-07") in _table_rows(document, 0)
+    assert ("Document Version", "1.0") in _table_rows(document, 0)
     timeline_rows = _table_rows(document, 1)
     assert timeline_rows[0] == ("Milestone", "Target Date", "Owner", "Status")
     assert timeline_rows[1][0] == "Discovery"
@@ -100,8 +107,8 @@ def test_business_proposal_uses_placeholders_for_missing_metadata(
 
     rows = _table_rows(document, 0)
     assert ("Prepared For", "[Audience]") in rows
-    assert ("Date", "[Date]") in rows
-    assert ("Version", "[Version]") in rows
+    assert ("Document Date", "2026-11-07") in rows
+    assert ("Document Version", "1.0") in rows
 
 
 def test_meeting_minutes_have_metadata_and_action_items(tmp_path: Path) -> None:
@@ -129,10 +136,12 @@ def test_meeting_minutes_have_metadata_and_action_items(tmp_path: Path) -> None:
     document = _generate(tmp_path, content)
 
     meeting_rows = _table_rows(document, 0)
-    assert ("Date", "2026-11-06") in meeting_rows
+    assert ("Meeting Date", "2026-11-06") in meeting_rows
     assert ("Attendees", "Anna, Ben") in meeting_rows
+    assert ("Document Date", "2026-11-07") in _table_rows(document, 1)
+    assert ("Document Version", "1.0") in _table_rows(document, 1)
 
-    action_rows = _table_rows(document, 1)
+    action_rows = _table_rows(document, 2)
     assert action_rows[0] == ("Action", "Owner", "Due Date", "Status")
     assert action_rows[1] == ("Send notes", "[Owner]", "[Due date]", "[Status]")
     assert action_rows[2] == ("Review budget", "Ben", "2026-11-10", "Open")
@@ -172,7 +181,8 @@ def test_business_report_has_report_metadata(tmp_path: Path) -> None:
     rows = _table_rows(document, 0)
     assert ("Document Type", "Business Report") in rows
     assert ("Prepared For", "Operations Team") in rows
-    assert ("Date", "2026-11-07") in rows
+    assert ("Document Date", "2026-11-07") in rows
+    assert ("Document Version", "1.0") in rows
 
 
 def test_technical_design_has_component_table(tmp_path: Path) -> None:
@@ -248,7 +258,9 @@ def test_generic_fallback_is_clean_and_has_no_specialized_tables(
 
     document = _generate(tmp_path, content)
 
-    assert document.tables == []
+    assert len(document.tables) == 1
+    assert ("Document Date", "2026-11-07") in _table_rows(document, 0)
+    assert ("Document Version", "1.0") in _table_rows(document, 0)
     assert _paragraph_texts(document, "Heading 1") == [
         "Executive Overview",
         "Main Content",
@@ -266,7 +278,7 @@ def test_unknown_document_type_fails_safely(tmp_path: Path) -> None:
 def test_header_footer_and_page_number_are_present(tmp_path: Path) -> None:
     content = _content(DocumentType.BUSINESS_REPORT, ("Findings",))
 
-    filename = DocxGenerator(tmp_path).generate(content, "Create a report")
+    filename = DocxGenerator(tmp_path).generate(content, "Create a report").filename
     document = Document(tmp_path / filename)
 
     assert document.sections[0].header.paragraphs[0].text == content.title

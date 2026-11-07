@@ -2,13 +2,21 @@
 
 import re
 import secrets
+from datetime import date
 from pathlib import Path
 
 from docx import Document
 from docx.shared import Inches, Pt
+from pydantic import BaseModel, ConfigDict, Field
 
 from backend.app.agent.document_content import DocumentContent
 from backend.app.agent.docx_templates import TemplateNotFoundError, render_document
+from backend.app.agent.models import DocumentPlan
+from backend.app.agent.placeholders import (
+    PlaceholderVerificationError,
+    RenderedPlaceholder,
+    collect_rendered_placeholders,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "var" / "output"
@@ -30,6 +38,17 @@ _COMMAND_PREFIXES = {
 
 class DocxGenerationError(RuntimeError):
     """Raised when a DOCX document cannot be generated or verified."""
+
+
+class GeneratedDocument(BaseModel):
+    """Verified DOCX output and its effective metadata and placeholders."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    filename: str = Field(min_length=1)
+    document_date: str = Field(min_length=1)
+    document_version: str = Field(min_length=1)
+    placeholders: list[RenderedPlaceholder] = Field(default_factory=list)
 
 
 def _slugify(request: str) -> str:
@@ -73,8 +92,13 @@ def _configure_styles(document: Document) -> None:
     heading.paragraph_format.space_after = Pt(6)
 
 
-def _populate_document(document: Document, content: DocumentContent) -> None:
-    render_document(document, content)
+def _populate_document(
+    document: Document,
+    content: DocumentContent,
+    document_date: str,
+    document_version: str,
+) -> None:
+    render_document(document, content, document_date, document_version)
 
 
 def _apply_metadata(document: Document, content: DocumentContent) -> None:
@@ -94,7 +118,7 @@ def _remove_partial(path: Path) -> None:
         pass
 
 
-def _verify_document(destination: Path, content: DocumentContent) -> None:
+def _verify_document(destination: Path, content: DocumentContent) -> Document:
     try:
         generated = Document(destination)
     except Exception as exc:
@@ -126,6 +150,8 @@ def _verify_document(destination: Path, content: DocumentContent) -> None:
             )
         actual_index += 1
 
+    return generated
+
 
 class DocxGenerator:
     """Render validated content to a safely named DOCX file."""
@@ -133,7 +159,13 @@ class DocxGenerator:
     def __init__(self, output_dir: Path | str = DEFAULT_OUTPUT_DIR):
         self._output_dir = Path(output_dir)
 
-    def generate(self, content: DocumentContent, request: str) -> str:
+    def generate(
+        self,
+        content: DocumentContent,
+        request: str,
+        plan: DocumentPlan | None = None,
+        today: date | None = None,
+    ) -> GeneratedDocument:
         output_dir = self._output_dir.expanduser().resolve()
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -149,16 +181,34 @@ class DocxGenerator:
                 "The generated document path is outside the output directory."
             )
 
+        document_date = (
+            plan.document_date if plan and plan.document_date else None
+        ) or (today or date.today()).isoformat()
+        document_version = (
+            plan.document_version if plan and plan.document_version else "1.0"
+        )
+
         try:
             document = Document()
             _configure_styles(document)
-            _populate_document(document, content)
+            _populate_document(
+                document,
+                content,
+                document_date,
+                document_version,
+            )
             _apply_metadata(document, content)
             document.save(destination)
-            _verify_document(destination, content)
+            verified = _verify_document(destination, content)
+            placeholders = collect_rendered_placeholders(verified, plan)
         except TemplateNotFoundError as exc:
             _remove_partial(destination)
             raise DocxGenerationError("Unsupported document type.") from exc
+        except PlaceholderVerificationError as exc:
+            _remove_partial(destination)
+            raise DocxGenerationError(
+                "The generated document contains an unexplained placeholder."
+            ) from exc
         except DocxGenerationError:
             _remove_partial(destination)
             raise
@@ -169,7 +219,12 @@ class DocxGenerator:
             _remove_partial(destination)
             raise DocxGenerationError("The document could not be generated.") from exc
 
-        return filename
+        return GeneratedDocument(
+            filename=filename,
+            document_date=document_date,
+            document_version=document_version,
+            placeholders=placeholders,
+        )
 
     def _allocate_filename(self, output_dir: Path, request: str) -> str:
         for _ in range(10):

@@ -1,8 +1,6 @@
 """Pydantic models for generated document content."""
 
-from typing import Self
-
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.app.agent.models import DocumentType
 
@@ -12,7 +10,12 @@ class _ContentModel(BaseModel):
 
 
 class ContentSection(_ContentModel):
-    """One ordered section of generated document content."""
+    """One ordered section of generated document content.
+
+    A section may have an empty body when its information is represented by
+    structured fields or when optional content is intentionally omitted. This
+    keeps factual accuracy ahead of filling every section with filler.
+    """
 
     heading: str = Field(min_length=1)
     paragraphs: list[str] = Field(default_factory=list)
@@ -24,12 +27,6 @@ class ContentSection(_ContentModel):
         if any(not value for value in values):
             raise ValueError("section content items must not be empty")
         return values
-
-    @model_validator(mode="after")
-    def _require_body(self) -> Self:
-        if not self.paragraphs and not self.bullets:
-            raise ValueError("a section must contain a paragraph or bullet")
-        return self
 
 
 class DocumentMetadata(_ContentModel):

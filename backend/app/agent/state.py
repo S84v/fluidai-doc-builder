@@ -7,6 +7,7 @@ from langgraph.graph.message import add_messages
 
 from backend.app.agent.document_content import DocumentContent
 from backend.app.agent.models import DocumentPlan
+from backend.app.agent.placeholders import RenderedPlaceholder
 from backend.app.agent.validation import ValidationReport
 
 AgentStatus = Literal[
@@ -55,6 +56,9 @@ class AgentState(TypedDict, total=False):
     content: DocumentContent | None
     document_error: str
     validation_report: ValidationReport | None
+    rendered_placeholders: list[RenderedPlaceholder]
+    document_date: str
+    document_version: str
     validation_errors: list[str]
     revision_count: int
     output_filename: str
@@ -76,6 +80,9 @@ def create_initial_state(request: str) -> AgentState:
         "content": None,
         "document_error": "",
         "validation_report": None,
+        "rendered_placeholders": [],
+        "document_date": "",
+        "document_version": "",
         "validation_errors": [],
         "revision_count": 0,
         "output_filename": "",

@@ -14,10 +14,12 @@ from backend.app.agent import (
     run_agent,
 )
 from backend.app.agent.graph import TOOL_FAILURE_RESPONSE, TOOL_LIMIT_RESPONSE
+from backend.tests.plan_factory import make_execution_tasks
 
 
 def _plan() -> DocumentPlan:
     return DocumentPlan(
+        execution_tasks=make_execution_tasks(),
         document_type=DocumentType.BUSINESS_REPORT,
         title="Status Report",
         objective="Plan a structured business document.",

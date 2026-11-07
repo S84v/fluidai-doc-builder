@@ -16,6 +16,7 @@ from backend.app.agent import (
     DocumentType,
     DocxGenerationError,
     DocxGenerator,
+    GeneratedDocument,
     MeetingDetails,
     Milestone,
     PlanningError,
@@ -43,6 +44,7 @@ from backend.app.agent.validation import (
     DocumentValidator,
     IssueSeverity,
 )
+from backend.tests.plan_factory import make_execution_tasks
 
 
 class StaticPlanner:
@@ -145,15 +147,26 @@ class RecordingDocx:
         self.error = error
         self.calls = 0
 
-    def generate(self, content: DocumentContent, request: str) -> str:
+    def generate(
+        self,
+        content: DocumentContent,
+        request: str,
+        plan: DocumentPlan | None = None,
+        today: object | None = None,
+    ) -> GeneratedDocument:
         self.calls += 1
         if self.error is not None:
             raise self.error
-        return "unused-000000000000.docx"
+        return GeneratedDocument(
+            filename="unused-000000000000.docx",
+            document_date="2026-11-07",
+            document_version="1.0",
+        )
 
 
 def _plan(document_type: DocumentType, headings: tuple[str, ...]) -> DocumentPlan:
     return DocumentPlan(
+        execution_tasks=make_execution_tasks(),
         document_type=document_type,
         title=f"{document_type.value.replace('_', ' ').title()} Test",
         objective="Exercise the complete offline graph.",
@@ -318,50 +331,34 @@ def _case(document_type: DocumentType) -> tuple[DocumentPlan, DocumentContent]:
 def _template_checks(document_type: DocumentType, document: Document) -> None:
     tables = document.tables
     paragraphs = document.paragraphs
+    table_values = {
+        cell.text for table in tables for row in table.rows for cell in row.cells
+    }
+
+    assert "Document Date" in table_values
+    assert "Document Version" in table_values
 
     if document_type is DocumentType.BUSINESS_PROPOSAL:
         assert tables
         assert any('w:type="page"' in p._p.xml for p in paragraphs)
-        assert any(
-            row.cells[0].text == "Prepared For"
-            for table in tables
-            for row in table.rows
-        )
+        assert "Prepared For" in table_values
     elif document_type is DocumentType.MEETING_MINUTES:
         assert len(tables) >= 2
-        assert any(
-            row.cells[0].text == "Date" for table in tables for row in table.rows
-        )
-        assert any(
-            row.cells[0].text == "Action" for table in tables for row in table.rows
-        )
+        assert "Meeting Date" in table_values
+        assert "Action" in table_values
     elif document_type is DocumentType.PROJECT_PLAN:
-        assert any(
-            row.cells[0].text == "Milestone" for table in tables for row in table.rows
-        )
+        assert "Milestone" in table_values
     elif document_type is DocumentType.BUSINESS_REPORT:
-        assert any(
-            row.cells[0].text == "Report Details"
-            or row.cells[0].text == "Document Type"
-            for table in tables
-            for row in table.rows
-        )
+        assert "Document Type" in table_values
     elif document_type is DocumentType.TECHNICAL_DESIGN:
-        assert any(
-            row.cells[0].text == "Component" for table in tables for row in table.rows
-        )
+        assert "Component" in table_values
     elif document_type is DocumentType.SOP:
         numbered = [p.text for p in paragraphs if p.style.name == "List Number"]
         assert numbered == ["Open the system.", "Record the result."]
     elif document_type is DocumentType.PRODUCT_SPECIFICATION:
-        assert any(
-            cell.text == "Requirement"
-            for table in tables
-            for row in table.rows
-            for cell in row.cells
-        )
+        assert "Requirement" in table_values
     else:
-        assert tables == []
+        assert len(tables) == 1
 
 
 @pytest.mark.parametrize("document_type", list(DocumentType))
@@ -401,6 +398,64 @@ async def test_complete_graph_for_every_document_type(
     for section in content.sections:
         assert section.heading in headings
     _template_checks(document_type, document)
+
+
+async def test_meeting_minutes_allow_sections_backed_only_by_structured_fields(
+    tmp_path: Path,
+) -> None:
+    headings = ("Meeting Details", "Agenda", "Decisions", "Action Items")
+    plan = _plan(DocumentType.MEETING_MINUTES, headings)
+    content = DocumentContent(
+        document_type=DocumentType.MEETING_MINUTES,
+        title=plan.title,
+        meeting=MeetingDetails(
+            date="2026-11-06",
+            time="10:00",
+            location="Room A",
+            facilitator="Anna",
+            attendees=["Anna", "Ben"],
+        ),
+        action_items=[
+            ActionItem(
+                action="Send notes",
+                owner="Anna",
+                due_date="2026-11-08",
+                status="Open",
+            )
+        ],
+        sections=[ContentSection(heading=heading) for heading in headings],
+    )
+
+    result = await run_agent(
+        "Create short meeting minutes for the Atlas kickoff.",
+        planner=StaticPlanner(plan),
+        tool_selector=NoToolSelector(),
+        writer=StaticWriter(content),
+        docx_generator=DocxGenerator(tmp_path),
+        validator=DocumentValidator(NoIssueReviewer()),
+    )
+
+    assert result["status"] == "completed"
+    assert result["validation_report"] is not None
+    assert result["validation_report"].passed is True
+    assert result["output_filename"]
+    assert (tmp_path / result["output_filename"]).exists()
+
+    document = Document(tmp_path / result["output_filename"])
+    headings_in_document = [
+        paragraph.text
+        for paragraph in document.paragraphs
+        if paragraph.style.name == "Heading 1"
+    ]
+    assert headings_in_document == list(headings)
+    table_values = {
+        cell.text
+        for table in document.tables
+        for row in table.rows
+        for cell in row.cells
+    }
+    assert "Meeting Date" in table_values
+    assert "Send notes" in table_values
 
 
 async def test_invalid_request_never_generates_document(tmp_path: Path) -> None:

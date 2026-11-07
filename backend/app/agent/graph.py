@@ -459,11 +459,12 @@ def build_agent_graph(
 
     async def generate_docx(state: AgentState) -> dict[str, Any]:
         content = state.get("content")
-        if content is None:
+        plan = state.get("plan")
+        if content is None or plan is None:
             return {
                 "output_filename": "",
                 "document_error": (
-                    "Validated content is required before DOCX generation."
+                    "Validated content and a plan are required before DOCX generation."
                 ),
                 "status": "failed",
             }
@@ -472,19 +473,26 @@ def build_agent_graph(
             active_generator = docx_generator or (
                 DocxGenerator(output_dir) if output_dir is not None else DocxGenerator()
             )
-            filename = active_generator.generate(
+            generated = active_generator.generate(
                 content,
                 state.get("normalized_request", ""),
+                plan,
             )
         except (DocxGenerationError, OSError) as exc:
             return {
                 "output_filename": "",
+                "rendered_placeholders": [],
+                "document_date": "",
+                "document_version": "",
                 "document_error": str(exc),
                 "status": "failed",
             }
 
         return {
-            "output_filename": filename,
+            "output_filename": generated.filename,
+            "rendered_placeholders": generated.placeholders,
+            "document_date": generated.document_date,
+            "document_version": generated.document_version,
             "document_error": "",
             "status": "docx_generation",
         }

@@ -18,6 +18,7 @@ from backend.app.agent import (
     run_agent,
 )
 from backend.app.services.llm import MissingDeepSeekApiKeyError
+from backend.tests.plan_factory import make_execution_tasks
 
 
 def _plan(
@@ -26,6 +27,7 @@ def _plan(
     title: str = "Status Report",
 ) -> DocumentPlan:
     return DocumentPlan(
+        execution_tasks=make_execution_tasks(),
         document_type=document_type,
         title=title,
         objective="Plan a structured business document.",

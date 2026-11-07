@@ -17,12 +17,14 @@ from backend.app.agent import (
     PlanSection,
     run_agent,
 )
+from backend.tests.plan_factory import make_execution_tasks
 
 REASONING_SENTINEL = "INTERNAL_REASONING_MUST_NOT_REACH_WRITER"
 
 
 def _plan() -> DocumentPlan:
     return DocumentPlan(
+        execution_tasks=make_execution_tasks(),
         document_type=DocumentType.BUSINESS_REPORT,
         title="Status Report",
         objective="Plan a structured business document.",
@@ -64,7 +66,13 @@ class FailingWriter:
 
 
 class FailingDocxGenerator:
-    def generate(self, content: Any, request: str) -> str:
+    def generate(
+        self,
+        content: Any,
+        request: str,
+        plan: DocumentPlan | None = None,
+        today: object | None = None,
+    ) -> Any:
         raise DocxGenerationError("docx generation failed")
 
 

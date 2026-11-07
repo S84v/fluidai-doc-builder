@@ -9,14 +9,19 @@ from backend.app.agent import (
     DocumentPlan,
     DocumentPlanner,
     DocumentType,
+    ExecutionStage,
+    ExecutionTask,
     PlanningError,
+    PlanPlaceholder,
     PlanSection,
+    RequirementConflict,
 )
 from backend.app.agent.planning import (
     DOCUMENT_STRUCTURE_GUIDANCE,
     DOCUMENT_TYPE_GUIDANCE,
     PLANNING_SYSTEM_PROMPT,
 )
+from backend.tests.plan_factory import make_execution_tasks
 
 
 class FakeRunnable:
@@ -74,6 +79,7 @@ def _plan(**overrides: Any) -> DocumentPlan:
         "assumptions": [],
         "missing_information": [],
         "clarification_questions": [],
+        "execution_tasks": make_execution_tasks(),
         **overrides,
     }
     return DocumentPlan(**values)
@@ -117,6 +123,124 @@ def test_planning_prompt_includes_type_specific_section_guidance() -> None:
     assert "Procedure Steps" in DOCUMENT_STRUCTURE_GUIDANCE[DocumentType.SOP]
 
 
+def test_planning_prompt_includes_execution_conflict_and_placeholder_guidance() -> None:
+    assert "request-specific list of meaningful work tasks" in PLANNING_SYSTEM_PROMPT
+    assert "Multiple tasks may share the same stage" in PLANNING_SYSTEM_PROMPT
+    assert "document_writing, validation and" in PLANNING_SYSTEM_PROMPT
+    assert "docx_generation" in PLANNING_SYSTEM_PROMPT
+    assert "document_date" in PLANNING_SYSTEM_PROMPT
+    assert "document_version" in PLANNING_SYSTEM_PROMPT
+    assert "Do not use meeting dates" in PLANNING_SYSTEM_PROMPT
+    assert "For each genuine conflict" in PLANNING_SYSTEM_PROMPT
+    assert "reason explaining why the value is" in PLANNING_SYSTEM_PROMPT
+
+
+def test_execution_plan_requires_core_task_stages() -> None:
+    incomplete = [
+        task
+        for task in make_execution_tasks()
+        if task.stage is not ExecutionStage.DOCUMENT_WRITING
+    ]
+
+    with pytest.raises(ValidationError, match="missing required stages"):
+        _plan(execution_tasks=incomplete)
+
+
+def test_execution_tasks_allow_multiple_tasks_per_stage_without_finalization() -> None:
+    tasks = [
+        ExecutionTask(
+            id="draft_summary",
+            title="Draft summary",
+            description="Draft the executive summary.",
+            stage=ExecutionStage.DOCUMENT_WRITING,
+        ),
+        ExecutionTask(
+            id="draft_findings",
+            title="Draft findings",
+            description="Draft the findings.",
+            stage=ExecutionStage.DOCUMENT_WRITING,
+        ),
+        ExecutionTask(
+            id="validate",
+            title="Validate",
+            description="Validate the document.",
+            stage=ExecutionStage.VALIDATION,
+        ),
+        ExecutionTask(
+            id="render",
+            title="Render",
+            description="Render the DOCX.",
+            stage=ExecutionStage.DOCX_GENERATION,
+        ),
+    ]
+
+    plan = _plan(execution_tasks=tasks)
+
+    assert len(plan.execution_tasks) == 4
+    assert plan.execution_tasks[0].stage is ExecutionStage.DOCUMENT_WRITING
+    assert plan.execution_tasks[1].stage is ExecutionStage.DOCUMENT_WRITING
+
+
+def test_duplicate_execution_task_ids_are_rejected() -> None:
+    tasks = make_execution_tasks()
+    tasks[1] = tasks[1].model_copy(update={"id": tasks[0].id})
+
+    with pytest.raises(ValidationError, match="IDs must be unique"):
+        _plan(execution_tasks=tasks)
+
+
+def test_document_date_and_version_are_preserved() -> None:
+    plan = _plan(document_date="2026-11-07", document_version="1.2")
+
+    assert plan.document_date == "2026-11-07"
+    assert plan.document_version == "1.2"
+
+
+def test_conflict_requires_two_requirements_and_an_impact() -> None:
+    conflict = RequirementConflict(
+        requirements=["Four-week rollout", "Three weeks of cleanup"],
+        impact="The target cannot be met.",
+        resolution="Use a phased pilot.",
+    )
+    plan = _plan(conflicts=[conflict])
+    assert plan.conflicts[0].resolution == "Use a phased pilot."
+
+    with pytest.raises(ValidationError):
+        RequirementConflict(
+            requirements=["Only one requirement"],
+            impact="Invalid.",
+        )
+
+
+def test_placeholder_requires_brackets_and_a_reason() -> None:
+    with pytest.raises(ValidationError):
+        PlanPlaceholder(text="Budget", reason="Missing budget.")
+    with pytest.raises(ValidationError):
+        PlanPlaceholder(text="[Budget]", reason="")
+
+
+async def test_planner_preserves_tasks_conflicts_and_document_metadata() -> None:
+    plan = _plan(
+        document_date="2026-11-07",
+        document_version="1.2",
+        conflicts=[
+            RequirementConflict(
+                requirements=["Four-week rollout", "Three-week cleanup"],
+                impact="The target is not achievable as requested.",
+                resolution="Recommend a phased rollout.",
+            )
+        ],
+    )
+    planner = DocumentPlanner(FakeStructuredModel(plan))
+
+    result = await planner.create_plan("Create the plan")
+
+    assert result.document_date == "2026-11-07"
+    assert result.document_version == "1.2"
+    assert result.conflicts[0].impact.startswith("The target")
+    assert result.execution_tasks == plan.execution_tasks
+
+
 def test_document_plan_requires_at_least_one_section() -> None:
     with pytest.raises(ValidationError):
         _plan(sections=[])
@@ -130,6 +254,64 @@ def test_document_plan_rejects_unknown_document_type() -> None:
 def test_document_plan_rejects_extra_fields() -> None:
     with pytest.raises(ValidationError):
         _plan(unexpected_field="not allowed")
+
+
+def test_document_plan_rejects_duplicate_section_headings() -> None:
+    duplicate_sections = [
+        PlanSection(heading="Overview", purpose="First overview."),
+        PlanSection(heading="Overview", purpose="Second overview."),
+    ]
+
+    with pytest.raises(ValidationError, match="section headings must be unique"):
+        _plan(sections=duplicate_sections)
+
+
+def test_document_plan_rejects_headings_differing_only_by_case_or_whitespace() -> None:
+    duplicate_sections = [
+        PlanSection(heading="Financial   Review", purpose="First review."),
+        PlanSection(heading="  financial review  ", purpose="Second review."),
+    ]
+
+    with pytest.raises(ValidationError, match="section headings must be unique"):
+        _plan(sections=duplicate_sections)
+
+
+def test_plan_section_rejects_duplicate_placeholder_text() -> None:
+    placeholder = PlanPlaceholder(
+        text="[Budget]",
+        reason="Budget was not supplied.",
+    )
+
+    with pytest.raises(ValidationError, match="placeholder text must be unique"):
+        PlanSection(
+            heading="Budget",
+            purpose="Describe the budget.",
+            placeholders=[placeholder, placeholder],
+        )
+
+
+def test_same_placeholder_in_different_sections_remains_valid() -> None:
+    sections = [
+        PlanSection(
+            heading="Alpha",
+            purpose="First section.",
+            placeholders=[
+                PlanPlaceholder(text="[Budget]", reason="Alpha budget reason.")
+            ],
+        ),
+        PlanSection(
+            heading="Beta",
+            purpose="Second section.",
+            placeholders=[
+                PlanPlaceholder(text="[Budget]", reason="Beta budget reason.")
+            ],
+        ),
+    ]
+
+    plan = _plan(sections=sections)
+
+    assert plan.sections[0].placeholders[0].reason == "Alpha budget reason."
+    assert plan.sections[1].placeholders[0].reason == "Beta budget reason."
 
 
 def test_document_plan_accepts_all_supported_types() -> None:
@@ -175,7 +357,12 @@ async def test_planner_preserves_facts_assumptions_and_questions() -> None:
                 heading="Overview",
                 purpose="Introduce Atlas.",
                 key_points=["Known project name"],
-                placeholders=["[Project deadline]"],
+                placeholders=[
+                    PlanPlaceholder(
+                        text="[Project deadline]",
+                        reason="The project deadline was not provided.",
+                    )
+                ],
             )
         ],
     )
@@ -187,7 +374,12 @@ async def test_planner_preserves_facts_assumptions_and_questions() -> None:
     assert result.assumptions == ["A one-page summary is appropriate."]
     assert result.missing_information == ["Project deadline", "Budget"]
     assert result.clarification_questions == ["What is the project deadline?"]
-    assert result.sections[0].placeholders == ["[Project deadline]"]
+    assert result.sections[0].placeholders == [
+        PlanPlaceholder(
+            text="[Project deadline]",
+            reason="The project deadline was not provided.",
+        )
+    ]
 
 
 async def test_planner_wraps_model_failure() -> None:
@@ -207,8 +399,31 @@ async def test_planner_rejects_invalid_structured_output() -> None:
     }
     planner = DocumentPlanner(FakeStructuredModel(invalid_plan))
 
-    with pytest.raises(PlanningError, match="invalid document plan"):
+    with pytest.raises(PlanningError, match="valid document plan"):
         await planner.create_plan("Create a report")
+
+
+async def test_planner_retries_once_after_invalid_output() -> None:
+    plan = _plan()
+
+    class RetryModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def with_structured_output(self, *args: Any, **kwargs: Any) -> FakeRunnable:
+            async def ainvoke(messages: Any) -> Any:
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("invalid response")
+                return plan
+
+            return FakeRunnable(ainvoke)
+
+    model = RetryModel()
+    result = await DocumentPlanner(model).create_plan("Create the report")
+
+    assert result == plan
+    assert model.calls == 2
 
 
 async def test_planner_rejects_empty_request_without_calling_model() -> None:

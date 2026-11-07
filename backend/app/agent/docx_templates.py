@@ -12,7 +12,10 @@ from docx.text.paragraph import Paragraph
 from backend.app.agent.document_content import ContentSection, DocumentContent
 from backend.app.agent.models import DocumentType
 
-TemplateRenderer = Callable[[Document, DocumentContent], None]
+TemplateRenderer = Callable[
+    [Document, DocumentContent, str, str],
+    None,
+]
 
 
 class TemplateNotFoundError(RuntimeError):
@@ -112,22 +115,19 @@ def _add_metadata_table(
                 run.bold = True
 
 
-def _document_metadata_rows(content: DocumentContent) -> list[tuple[str, str]]:
-    metadata = content.metadata
+def _document_metadata_rows(
+    content: DocumentContent,
+    document_date: str,
+    document_version: str,
+) -> list[tuple[str, str]]:
     return [
         ("Document Type", content.document_type.value.replace("_", " ").title()),
         (
             "Prepared For",
             _value_or_placeholder(content.audience, "Audience"),
         ),
-        (
-            "Date",
-            _value_or_placeholder(metadata.date if metadata else None, "Date"),
-        ),
-        (
-            "Version",
-            _value_or_placeholder(metadata.version if metadata else None, "Version"),
-        ),
+        ("Document Date", document_date),
+        ("Document Version", document_version),
     ]
 
 
@@ -242,9 +242,18 @@ def _insert_sop_steps(document: Document, content: DocumentContent) -> None:
                 run.italic = True
 
 
-def render_business_proposal(document: Document, content: DocumentContent) -> None:
+def render_business_proposal(
+    document: Document,
+    content: DocumentContent,
+    document_date: str,
+    document_version: str,
+) -> None:
     _add_title(document, content, "Business Proposal")
-    _add_metadata_table(document, "Document Details", _document_metadata_rows(content))
+    _add_metadata_table(
+        document,
+        "Document Details",
+        _document_metadata_rows(content, document_date, document_version),
+    )
     document.add_page_break()
     _render_sections_with_insert(
         document,
@@ -256,11 +265,22 @@ def render_business_proposal(document: Document, content: DocumentContent) -> No
     )
 
 
-def render_meeting_minutes(document: Document, content: DocumentContent) -> None:
+def render_meeting_minutes(
+    document: Document,
+    content: DocumentContent,
+    document_date: str,
+    document_version: str,
+) -> None:
     _add_title(document, content, "Meeting Minutes")
     meeting = content.meeting
     meeting_rows = [
-        ("Date", _value_or_placeholder(meeting.date if meeting else None, "Date")),
+        (
+            "Meeting Date",
+            _value_or_placeholder(
+                meeting.date if meeting else None,
+                "Meeting date",
+            ),
+        ),
         ("Time", _value_or_placeholder(meeting.time if meeting else None, "Time")),
         (
             "Location",
@@ -280,6 +300,14 @@ def render_meeting_minutes(document: Document, content: DocumentContent) -> None
         ),
     ]
     _add_metadata_table(document, "Meeting Details", meeting_rows)
+    _add_metadata_table(
+        document,
+        "Document Details",
+        [
+            ("Document Date", document_date),
+            ("Document Version", document_version),
+        ],
+    )
     _render_sections_with_insert(
         document,
         content,
@@ -290,16 +318,34 @@ def render_meeting_minutes(document: Document, content: DocumentContent) -> None
     )
 
 
-def render_business_report(document: Document, content: DocumentContent) -> None:
+def render_business_report(
+    document: Document,
+    content: DocumentContent,
+    document_date: str,
+    document_version: str,
+) -> None:
     _add_title(document, content, "Business Report")
-    _add_metadata_table(document, "Report Details", _document_metadata_rows(content))
+    _add_metadata_table(
+        document,
+        "Report Details",
+        _document_metadata_rows(content, document_date, document_version),
+    )
     for section in content.sections:
         _render_section(document, section)
 
 
-def render_project_plan(document: Document, content: DocumentContent) -> None:
+def render_project_plan(
+    document: Document,
+    content: DocumentContent,
+    document_date: str,
+    document_version: str,
+) -> None:
     _add_title(document, content, "Project Plan")
-    _add_metadata_table(document, "Project Details", _document_metadata_rows(content))
+    _add_metadata_table(
+        document,
+        "Project Details",
+        _document_metadata_rows(content, document_date, document_version),
+    )
     _render_sections_with_insert(
         document,
         content,
@@ -310,9 +356,18 @@ def render_project_plan(document: Document, content: DocumentContent) -> None:
     )
 
 
-def render_technical_design(document: Document, content: DocumentContent) -> None:
+def render_technical_design(
+    document: Document,
+    content: DocumentContent,
+    document_date: str,
+    document_version: str,
+) -> None:
     _add_title(document, content, "Technical Design")
-    _add_metadata_table(document, "Document Details", _document_metadata_rows(content))
+    _add_metadata_table(
+        document,
+        "Document Details",
+        _document_metadata_rows(content, document_date, document_version),
+    )
     _render_sections_with_insert(
         document,
         content,
@@ -323,9 +378,18 @@ def render_technical_design(document: Document, content: DocumentContent) -> Non
     )
 
 
-def render_sop(document: Document, content: DocumentContent) -> None:
+def render_sop(
+    document: Document,
+    content: DocumentContent,
+    document_date: str,
+    document_version: str,
+) -> None:
     _add_title(document, content, "Standard Operating Procedure")
-    _add_metadata_table(document, "Document Details", _document_metadata_rows(content))
+    _add_metadata_table(
+        document,
+        "Document Details",
+        _document_metadata_rows(content, document_date, document_version),
+    )
     _render_sections_with_insert(
         document,
         content,
@@ -339,9 +403,15 @@ def render_sop(document: Document, content: DocumentContent) -> None:
 def render_product_specification(
     document: Document,
     content: DocumentContent,
+    document_date: str,
+    document_version: str,
 ) -> None:
     _add_title(document, content, "Product Specification")
-    _add_metadata_table(document, "Document Details", _document_metadata_rows(content))
+    _add_metadata_table(
+        document,
+        "Document Details",
+        _document_metadata_rows(content, document_date, document_version),
+    )
     _render_sections_with_insert(
         document,
         content,
@@ -352,8 +422,18 @@ def render_product_specification(
     )
 
 
-def render_generic(document: Document, content: DocumentContent) -> None:
+def render_generic(
+    document: Document,
+    content: DocumentContent,
+    document_date: str,
+    document_version: str,
+) -> None:
     _add_title(document, content, None)
+    _add_metadata_table(
+        document,
+        "Document Details",
+        _document_metadata_rows(content, document_date, document_version),
+    )
     for section in content.sections:
         _render_section(document, section)
 
@@ -370,9 +450,14 @@ TEMPLATE_RENDERERS: dict[DocumentType, TemplateRenderer] = {
 }
 
 
-def render_document(document: Document, content: DocumentContent) -> None:
+def render_document(
+    document: Document,
+    content: DocumentContent,
+    document_date: str,
+    document_version: str,
+) -> None:
     renderer = TEMPLATE_RENDERERS.get(content.document_type)
     if renderer is None:
         raise TemplateNotFoundError("Unsupported document type.")
     _add_header_footer(document, content)
-    renderer(document, content)
+    renderer(document, content, document_date, document_version)

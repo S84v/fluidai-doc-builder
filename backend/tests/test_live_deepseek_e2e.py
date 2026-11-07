@@ -106,16 +106,21 @@ async def test_live_e2e_agent_request_and_download(
 
         event_names = [event for event, _ in events]
         assert "error" not in event_names, events[-1][1]
+        assert event_names[0] == "plan"
         assert event_names[-2:] == ["token", "complete"]
 
-        progress = [data["message"] for event, data in events if event == "progress"]
-        assert "Understanding request..." in progress
-        assert "Planning document..." in progress
-        assert "Writing document..." in progress
-        assert "Validating document..." in progress
-        assert "Generating DOCX document..." in progress
+        plan_event = events[0][1]
+        task_stages = {task["stage"] for task in plan_event["tasks"]}
+        assert {"document_writing", "validation", "docx_generation"} <= task_stages
+
+        progress_stages = {
+            data["stage"] for event, data in events if event == "progress"
+        }
+        assert "document_writing" in progress_stages
+        assert "validation" in progress_stages
+        assert "docx_generation" in progress_stages
         if expects_tool:
-            assert "Processing tool results..." in progress
+            assert "tool_execution" in progress_stages
 
         token = next(data for event, data in events if event == "token")
         complete = next(data for event, data in events if event == "complete")
@@ -137,11 +142,14 @@ async def test_live_e2e_agent_request_and_download(
     assert headings
     table_values = _table_headers(document)
 
+    assert "Document Date" in table_values
+    assert "Document Version" in table_values
+
     if case_name == "business_proposal":
         assert "Prepared For" in table_values
         assert any(
             'w:type="page"' in paragraph._p.xml for paragraph in document.paragraphs
         )
     else:
-        assert "Date" in table_values
+        assert "Meeting Date" in table_values
         assert "Action" in table_values
