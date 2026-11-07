@@ -14,7 +14,6 @@ from backend.app.agent import (
     DocumentMetadata,
     DocumentPlan,
     DocumentType,
-    DocxGenerationError,
     DocxGenerator,
     MeetingDetails,
     Milestone,
@@ -24,9 +23,10 @@ from backend.app.agent import (
     TechnicalComponent,
 )
 from backend.app.agent.placeholders import (
+    AMBIGUOUS_PLACEHOLDER_REASON,
     PLACEHOLDER_RE,
     TEMPLATE_PLACEHOLDER_REASONS,
-    PlaceholderVerificationError,
+    UNKNOWN_PLACEHOLDER_REASON,
     collect_rendered_placeholders,
 )
 from backend.tests.plan_factory import make_execution_tasks
@@ -252,7 +252,7 @@ def test_plan_placeholder_in_structured_table_uses_plan_reason(tmp_path: Path) -
     assert "Table" in budget.location
 
 
-def test_ambiguous_structured_placeholder_reasons_are_rejected() -> None:
+def test_ambiguous_structured_placeholder_reasons_get_a_generic_reason() -> None:
     plan = _plan(DocumentType.BUSINESS_REPORT, ("Alpha", "Beta"))
     plan.sections[0].placeholders = [
         PlanPlaceholder(text="[Budget]", reason="Alpha budget reason.")
@@ -264,11 +264,10 @@ def test_ambiguous_structured_placeholder_reasons_are_rejected() -> None:
     table = document.add_table(rows=1, cols=1)
     table.cell(0, 0).text = "Budget: [Budget]"
 
-    with pytest.raises(
-        PlaceholderVerificationError,
-        match="multiple different plan explanations",
-    ):
-        collect_rendered_placeholders(document, plan)
+    records = collect_rendered_placeholders(document, plan)
+
+    assert len(records) == 1
+    assert records[0].reason == AMBIGUOUS_PLACEHOLDER_REASON
 
 
 def test_template_placeholder_reason_takes_precedence_in_structured_table() -> None:
@@ -288,7 +287,7 @@ def test_template_placeholder_reason_takes_precedence_in_structured_table() -> N
     assert owner.reason != "Custom plan owner reason."
 
 
-def test_undeclared_structured_table_placeholder_fails_verification(
+def test_undeclared_structured_table_placeholder_is_transparent(
     tmp_path: Path,
 ) -> None:
     plan = _plan(
@@ -302,13 +301,15 @@ def test_undeclared_structured_table_placeholder_fails_verification(
         requirements=[Requirement(description="Stay within [Mystery].")],
     )
 
-    with pytest.raises(DocxGenerationError, match="unexplained placeholder"):
-        DocxGenerator(tmp_path).generate(
-            content, "Create specification", plan, today=FIXED_TODAY
-        )
+    generated = DocxGenerator(tmp_path).generate(
+        content, "Create specification", plan, today=FIXED_TODAY
+    )
+
+    mystery = next(item for item in generated.placeholders if item.text == "[Mystery]")
+    assert mystery.reason == UNKNOWN_PLACEHOLDER_REASON
 
 
-def test_unexplained_content_placeholder_fails_verification(tmp_path: Path) -> None:
+def test_unexplained_content_placeholder_is_transparent(tmp_path: Path) -> None:
     plan = _plan(DocumentType.BUSINESS_REPORT, ("Overview",))
     content = DocumentContent(
         document_type=DocumentType.BUSINESS_REPORT,
@@ -321,10 +322,12 @@ def test_unexplained_content_placeholder_fails_verification(tmp_path: Path) -> N
         ],
     )
 
-    with pytest.raises(DocxGenerationError, match="unexplained placeholder"):
-        DocxGenerator(tmp_path).generate(
-            content, "Create report", plan, today=FIXED_TODAY
-        )
+    generated = DocxGenerator(tmp_path).generate(
+        content, "Create report", plan, today=FIXED_TODAY
+    )
+
+    mystery = next(item for item in generated.placeholders if item.text == "[Mystery]")
+    assert mystery.reason == UNKNOWN_PLACEHOLDER_REASON
 
 
 def test_document_date_and_version_defaults(tmp_path: Path) -> None:
@@ -443,7 +446,9 @@ def test_multiple_occurrences_in_one_section_remain_separate(tmp_path: Path) -> 
     assert all(item.reason == "Budget was not supplied." for item in budgets)
 
 
-def test_rendered_placeholder_in_unmatched_section_fails(tmp_path: Path) -> None:
+def test_rendered_placeholder_in_unmatched_section_uses_global_reason(
+    tmp_path: Path,
+) -> None:
     plan = _plan(DocumentType.BUSINESS_REPORT, ("Alpha",))
     plan.sections[0].placeholders = [
         PlanPlaceholder(text="[Budget]", reason="Alpha budget reason.")
@@ -454,13 +459,15 @@ def test_rendered_placeholder_in_unmatched_section_fails(tmp_path: Path) -> None
         sections=[ContentSection(heading="Gamma", paragraphs=["Budget: [Budget]"])],
     )
 
-    with pytest.raises(DocxGenerationError, match="unexplained placeholder"):
-        DocxGenerator(tmp_path).generate(
-            content, "Create report", plan, today=FIXED_TODAY
-        )
+    generated = DocxGenerator(tmp_path).generate(
+        content, "Create report", plan, today=FIXED_TODAY
+    )
+
+    budget = next(item for item in generated.placeholders if item.text == "[Budget]")
+    assert budget.reason == "Alpha budget reason."
 
 
-def test_header_and_footer_placeholders_require_template_context() -> None:
+def test_header_and_footer_placeholders_get_generic_reasons() -> None:
     placeholder = PlanPlaceholder(
         text="[Budget]",
         reason="The approved budget was not supplied.",
@@ -472,8 +479,10 @@ def test_header_and_footer_placeholders_require_template_context() -> None:
     document.sections[0].header.paragraphs[0].text = "Budget: [Budget]"
     document.sections[0].footer.paragraphs[0].text = "Budget: [Budget]"
 
-    with pytest.raises(PlaceholderVerificationError, match="no matching explanation"):
-        collect_rendered_placeholders(document, plan)
+    records = collect_rendered_placeholders(document, plan)
+
+    assert len(records) == 2
+    assert all(record.reason == UNKNOWN_PLACEHOLDER_REASON for record in records)
 
 
 def test_template_placeholders_in_header_receive_deterministic_reason() -> None:

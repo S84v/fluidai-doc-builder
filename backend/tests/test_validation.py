@@ -122,6 +122,56 @@ def _content(
     )
 
 
+def _ownership_plan(
+    *,
+    owner_placeholder: PlanPlaceholder | None = None,
+) -> DocumentPlan:
+    plan = _plan(
+        DocumentType.PROJECT_PLAN,
+        ("Overview", "Responsibilities and Governance"),
+        missing_information=[
+            "Project owners and responsibility assignments are unavailable."
+        ],
+    )
+    plan.sections[1].placeholders = [
+        owner_placeholder
+        or PlanPlaceholder(
+            text="[Project Owner]",
+            reason="The project owner was not provided.",
+        )
+    ]
+    return plan
+
+
+def _ownership_content(
+    plan: DocumentPlan,
+    responsibility_items: list[str],
+) -> DocumentContent:
+    content = _content(plan)
+    responsibilities = content.sections[1]
+    responsibilities.paragraphs = []
+    responsibilities.bullets = responsibility_items
+    return content
+
+
+def _reviewer_output(
+    *,
+    code: str = "responsibilities_not_defined",
+    message: str = "Owner identities and responsibility assignments are missing.",
+    section: str | None = "Responsibilities and Governance",
+) -> ReviewOutput:
+    return ReviewOutput(
+        issues=[
+            ValidationIssue(
+                code=code,
+                message=message,
+                severity=IssueSeverity.BLOCKING,
+                section=section,
+            )
+        ]
+    )
+
+
 def _codes(report: ValidationReport) -> set[str]:
     return {issue.code for issue in report.issues}
 
@@ -142,20 +192,24 @@ def test_validation_report_derives_pass_status_from_blocking_issues() -> None:
     assert ValidationReport(issues=[warning, blocking]).passed is False
 
 
-def test_document_type_and_section_mismatches_are_blocking() -> None:
+def test_document_type_mismatch_is_blocking() -> None:
     plan = _plan(headings=("Overview", "Findings"))
     wrong_type = _content(plan, document_type=DocumentType.MEETING_MINUTES)
+
+    report = ValidationReport(issues=validate_document_structure(wrong_type, plan))
+
+    assert report.passed is False
+    assert "document_type_mismatch" in _codes(report)
+
+
+def test_section_order_mismatch_is_a_warning() -> None:
+    plan = _plan(headings=("Overview", "Findings"))
     wrong_order = _content(plan, headings=("Findings", "Overview"))
 
-    type_report = ValidationReport(issues=validate_document_structure(wrong_type, plan))
-    order_report = ValidationReport(
-        issues=validate_document_structure(wrong_order, plan)
-    )
+    report = ValidationReport(issues=validate_document_structure(wrong_order, plan))
 
-    assert type_report.passed is False
-    assert "document_type_mismatch" in _codes(type_report)
-    assert order_report.passed is False
-    assert "section_structure_mismatch" in _codes(order_report)
+    assert report.passed is True
+    assert "section_structure_mismatch" in _codes(report)
 
 
 def test_document_with_only_empty_sections_is_blocking() -> None:
@@ -317,14 +371,14 @@ def test_placeholders_are_accepted_and_missing_placeholders_warn() -> None:
     assert without_placeholder.passed is True
 
 
-def test_unexplained_content_placeholder_is_blocking() -> None:
+def test_unexplained_content_placeholder_is_a_warning() -> None:
     plan = _plan(headings=("Overview",))
     content = _content(plan)
     content.sections[0].paragraphs = ["Unknown: [Mystery]"]
 
     report = ValidationReport(issues=validate_document_structure(content, plan))
 
-    assert report.passed is False
+    assert report.passed is True
     assert "unexplained_placeholder" in _codes(report)
 
 
@@ -377,7 +431,7 @@ def test_known_template_placeholder_in_structured_field_is_accepted() -> None:
     assert "unexplained_placeholder" not in _codes(report)
 
 
-def test_plan_declared_placeholder_in_unrelated_metadata_is_blocking() -> None:
+def test_plan_declared_placeholder_in_unrelated_metadata_is_a_warning() -> None:
     plan = _plan(headings=("Budget",))
     plan.sections[0].placeholders = [
         PlanPlaceholder(
@@ -390,11 +444,11 @@ def test_plan_declared_placeholder_in_unrelated_metadata_is_blocking() -> None:
 
     report = ValidationReport(issues=validate_document_structure(content, plan))
 
-    assert report.passed is False
+    assert report.passed is True
     assert "unexplained_placeholder" in _codes(report)
 
 
-def test_plan_declared_placeholder_in_title_is_blocking() -> None:
+def test_plan_declared_placeholder_in_title_is_a_warning() -> None:
     plan = _plan(headings=("Budget",))
     plan.sections[0].placeholders = [
         PlanPlaceholder(
@@ -407,7 +461,7 @@ def test_plan_declared_placeholder_in_title_is_blocking() -> None:
 
     report = ValidationReport(issues=validate_document_structure(content, plan))
 
-    assert report.passed is False
+    assert report.passed is True
     assert "unexplained_placeholder" in _codes(report)
 
 
@@ -422,18 +476,18 @@ def test_template_metadata_placeholder_is_accepted() -> None:
     assert "unexplained_placeholder" not in _codes(report)
 
 
-def test_undeclared_metadata_placeholder_is_blocking() -> None:
+def test_undeclared_metadata_placeholder_is_a_warning() -> None:
     plan = _plan(headings=("Overview",))
     content = _content(plan)
     content.audience = "[Mystery]"
 
     report = ValidationReport(issues=validate_document_structure(content, plan))
 
-    assert report.passed is False
+    assert report.passed is True
     assert "unexplained_placeholder" in _codes(report)
 
 
-def test_placeholder_declared_in_section_a_is_not_allowed_in_section_b() -> None:
+def test_placeholder_declared_in_section_a_is_allowed_in_section_b() -> None:
     plan = _plan(headings=("Alpha", "Beta"))
     plan.sections[0].placeholders = [
         PlanPlaceholder(text="[Budget]", reason="Alpha budget reason.")
@@ -444,12 +498,8 @@ def test_placeholder_declared_in_section_a_is_not_allowed_in_section_b() -> None
 
     report = ValidationReport(issues=validate_document_structure(content, plan))
 
-    assert report.passed is False
-    unexplained = [
-        issue for issue in report.issues if issue.code == "unexplained_placeholder"
-    ]
-    assert len(unexplained) == 1
-    assert unexplained[0].section == "Beta"
+    assert report.passed is True
+    assert "unexplained_placeholder" not in _codes(report)
 
 
 def test_same_placeholder_declared_in_both_sections_is_accepted() -> None:
@@ -480,6 +530,148 @@ def test_validator_skips_reviewer_when_deterministic_issues_block() -> None:
 
     assert report.passed is False
     assert reviewer.calls == []
+
+
+def test_quality_completeness_review_issue_is_a_warning() -> None:
+    plan = _ownership_plan()
+    content = _ownership_content(
+        plan,
+        [
+            "[Project Owner] is accountable for overall delivery.",
+            "The Steering Committee approves scope changes.",
+            "The project manager coordinates workstreams.",
+        ],
+    )
+    reviewer = FakeReviewer(
+        _reviewer_output(
+            code="missing_indicative_timeline",
+            message="The indicative timeline is incomplete.",
+            section="Milestones and Timeline",
+        )
+    )
+
+    report = asyncio_run(DocumentValidator(reviewer).validate("request", plan, content))
+
+    assert report.passed is True
+    adjusted = next(
+        issue for issue in report.issues if issue.code == "missing_indicative_timeline"
+    )
+    assert adjusted.severity is IssueSeverity.WARNING
+
+
+def test_missing_responsibilities_review_issue_is_a_warning() -> None:
+    plan = _ownership_plan()
+    content = _ownership_content(plan, ["[Project Owner]"])
+    reviewer = FakeReviewer(_reviewer_output())
+
+    report = asyncio_run(DocumentValidator(reviewer).validate("request", plan, content))
+
+    assert report.passed is True
+    adjusted = next(
+        issue for issue in report.issues if issue.code == "responsibilities_not_defined"
+    )
+    assert adjusted.severity is IssueSeverity.WARNING
+
+
+def test_unsupported_fact_blocker_remains_blocking() -> None:
+    plan = _ownership_plan()
+    content = _ownership_content(
+        plan,
+        ["[Project Owner] is accountable for overall delivery."],
+    )
+    reviewer = FakeReviewer(
+        _reviewer_output(
+            code="unsupported_claim",
+            message="The document invents an owner name.",
+        )
+    )
+
+    report = asyncio_run(DocumentValidator(reviewer).validate("request", plan, content))
+
+    assert report.passed is False
+    blocking = next(
+        issue for issue in report.issues if issue.code == "unsupported_claim"
+    )
+    assert blocking.severity is IssueSeverity.BLOCKING
+
+
+def test_assumption_as_confirmed_fact_remains_blocking() -> None:
+    plan = _ownership_plan()
+    content = _ownership_content(
+        plan,
+        ["[Project Owner] is accountable for overall delivery."],
+    )
+    reviewer = FakeReviewer(
+        _reviewer_output(
+            code="assumption_as_confirmed_fact",
+            message="The document states a planning assumption as fact.",
+        )
+    )
+
+    report = asyncio_run(DocumentValidator(reviewer).validate("request", plan, content))
+
+    assert report.passed is False
+    blocking = next(
+        issue for issue in report.issues if issue.code == "assumption_as_confirmed_fact"
+    )
+    assert blocking.severity is IssueSeverity.BLOCKING
+
+
+@pytest.mark.parametrize(
+    "code",
+    ["ROLLOUT_SCOPE_CONTRADICTION", "TRAINING_PHASE_CONTRADICTION"],
+)
+def test_material_contradiction_remains_blocking(code: str) -> None:
+    plan = _ownership_plan()
+    content = _ownership_content(
+        plan,
+        ["[Project Owner] is accountable for overall delivery."],
+    )
+    reviewer = FakeReviewer(
+        _reviewer_output(
+            code=code,
+            message="The document contradicts an explicitly supplied constraint.",
+        )
+    )
+
+    report = asyncio_run(DocumentValidator(reviewer).validate("request", plan, content))
+
+    assert report.passed is False
+    blocking = next(issue for issue in report.issues if issue.code == code)
+    assert blocking.severity is IssueSeverity.BLOCKING
+
+
+def test_reviewer_unavailable_is_a_warning() -> None:
+    plan = _ownership_plan()
+    content = _ownership_content(
+        plan,
+        ["[Project Owner] is accountable for overall delivery."],
+    )
+    reviewer = FakeReviewer(error=ReviewError("review model unavailable"))
+
+    report = asyncio_run(DocumentValidator(reviewer).validate("request", plan, content))
+
+    assert report.passed is True
+    warning = next(
+        issue for issue in report.issues if issue.code == "review_unavailable"
+    )
+    assert warning.severity is IssueSeverity.WARNING
+
+
+def test_info_severity_does_not_block() -> None:
+    report = ValidationReport(
+        issues=[
+            ValidationIssue(
+                code="optional_note",
+                message="An optional improvement is available.",
+                severity=IssueSeverity.INFO,
+            )
+        ]
+    )
+
+    assert report.passed is True
+    assert len(report.warnings) == 0
+    assert len(report.informational) == 1
 
 
 def test_validator_merges_deterministic_and_review_issues() -> None:
@@ -524,6 +716,13 @@ def test_reviewer_uses_json_mode_and_receives_evidence() -> None:
     system_prompt = model.calls[0][0].content
     assert "Do not blindly trust" in system_prompt
     assert "Do not penalize legitimate placeholders" in system_prompt
+    assert "Severity policy" in system_prompt
+    assert "missing owner identities or partially specified responsibilities" in (
+        system_prompt
+    )
+    assert "Use info severity" in system_prompt
+    assert "A placeholder declared anywhere" in system_prompt
+    assert "relative indicative schedule" in system_prompt
     assert "Do not penalize an empty section body" in system_prompt
     assert "original user request is the primary source" in system_prompt
     assert "Invented names, organisations" in system_prompt

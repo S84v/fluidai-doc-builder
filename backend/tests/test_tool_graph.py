@@ -8,6 +8,8 @@ from backend.app.agent import (
     MAX_TOOL_ROUNDS,
     DocumentPlan,
     DocumentType,
+    ExecutionStage,
+    ExecutionTask,
     PlanningError,
     PlanSection,
     ToolSelectionError,
@@ -17,9 +19,19 @@ from backend.app.agent.graph import TOOL_FAILURE_RESPONSE, TOOL_LIMIT_RESPONSE
 from backend.tests.plan_factory import make_execution_tasks
 
 
-def _plan() -> DocumentPlan:
+def _plan(*, include_tool_task: bool = True) -> DocumentPlan:
+    tasks = list(make_execution_tasks())
+    if include_tool_task:
+        tasks.append(
+            ExecutionTask(
+                id="use_calculator",
+                title="Use calculator",
+                description="Compute an explicitly requested calculation.",
+                stage=ExecutionStage.TOOL_EXECUTION,
+            )
+        )
     return DocumentPlan(
-        execution_tasks=make_execution_tasks(),
+        execution_tasks=tasks,
         document_type=DocumentType.BUSINESS_REPORT,
         title="Status Report",
         objective="Plan a structured business document.",
@@ -33,13 +45,19 @@ def _plan() -> DocumentPlan:
 
 
 class FakePlanner:
-    def __init__(self, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        error: Exception | None = None,
+        *,
+        include_tool_task: bool = True,
+    ) -> None:
         self._error = error
+        self._include_tool_task = include_tool_task
 
     async def create_plan(self, request: str) -> DocumentPlan:
         if self._error is not None:
             raise self._error
-        return _plan()
+        return _plan(include_tool_task=self._include_tool_task)
 
 
 class FakeToolSelector:
@@ -135,6 +153,76 @@ async def test_tool_request_executes_and_result_returns_to_model(
         if isinstance(message, AIMessage) and message.tool_calls
     )
     assert first_ai.additional_kwargs["reasoning_content"] == "Use the calculator."
+
+
+async def test_plan_without_tool_execution_skips_selection(
+    fake_writer: Any,
+    fake_docx_generator: Any,
+    fake_validator: Any,
+) -> None:
+    selector = FakeToolSelector()
+
+    result = await run_agent(
+        "Summarise the plan.",
+        planner=FakePlanner(include_tool_task=False),
+        tool_selector=selector,
+        writer=fake_writer,
+        docx_generator=fake_docx_generator,
+        validator=fake_validator,
+    )
+
+    assert result["status"] == "completed"
+    assert result["tool_rounds"] == 0
+    assert selector.calls == []
+
+
+async def test_explicit_calculation_runs_selection_without_tool_task(
+    fake_writer: Any,
+    fake_docx_generator: Any,
+    fake_validator: Any,
+) -> None:
+    selector = FakeToolSelector(
+        [
+            _tool_response("17 * 23", "call_1"),
+            AIMessage(content="17 * 23 = 391."),
+        ]
+    )
+
+    result = await run_agent(
+        "What is 17 * 23?",
+        planner=FakePlanner(include_tool_task=False),
+        tool_selector=selector,
+        writer=fake_writer,
+        docx_generator=fake_docx_generator,
+        validator=fake_validator,
+    )
+
+    assert result["status"] == "completed"
+    assert len(selector.calls) == 2
+    tool_message = next(
+        message for message in result["messages"] if isinstance(message, ToolMessage)
+    )
+    assert tool_message.content == "391"
+
+
+async def test_date_like_request_does_not_trigger_selection_without_tool_task(
+    fake_writer: Any,
+    fake_docx_generator: Any,
+    fake_validator: Any,
+) -> None:
+    selector = FakeToolSelector()
+
+    result = await run_agent(
+        "Create meeting minutes dated 2026-11-06.",
+        planner=FakePlanner(include_tool_task=False),
+        tool_selector=selector,
+        writer=fake_writer,
+        docx_generator=fake_docx_generator,
+        validator=fake_validator,
+    )
+
+    assert result["status"] == "completed"
+    assert selector.calls == []
 
 
 async def test_no_tool_needed_skips_tool_execution(

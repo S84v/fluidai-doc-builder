@@ -305,6 +305,37 @@ async def test_successful_sse_stream_has_plan_tasks_placeholders_and_complete() 
     assert SENSITIVE_SENTINEL not in response.text
 
 
+async def test_skipped_tool_selection_emits_progress_without_tool_execution() -> None:
+    plan = _plan()
+    plan = plan.model_copy(
+        update={
+            "execution_tasks": [
+                task
+                for task in plan.execution_tasks
+                if task.stage is not ExecutionStage.TOOL_EXECUTION
+            ]
+        }
+    )
+    events = [
+        event for event in _success_events(plan) if event.get("name") != "select_tools"
+    ]
+    app = create_app(_settings(), graph_factory=lambda: FakeGraph(events))
+
+    async with _client(app) as client:
+        response = await client.post("/agent", json={"request": "Create a report"})
+
+    parsed = _parse_sse(response.text)
+    progress = [data for event, data in parsed if event == "progress"]
+    selection = [item for item in progress if item["stage"] == "tool_selection"]
+    execution = [item for item in progress if item["stage"] == "tool_execution"]
+
+    assert selection
+    assert selection[0]["status"] == "skipped"
+    assert selection[0]["message"] == "No tool selection was required."
+    assert execution == []
+    assert parsed[-1][0] == "complete"
+
+
 async def test_rejected_request_emits_error_not_token() -> None:
     events = [
         _event("start", "prepare_request"),

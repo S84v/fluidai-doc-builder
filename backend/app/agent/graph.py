@@ -14,6 +14,7 @@ from backend.app.agent.document_writer import (
     build_document_writer,
 )
 from backend.app.agent.docx_generator import DocxGenerationError, DocxGenerator
+from backend.app.agent.models import ExecutionStage
 from backend.app.agent.planning import (
     DocumentPlanner,
     PlanningError,
@@ -26,13 +27,17 @@ from backend.app.agent.tool_selection import (
     ToolSelector,
     build_tool_selection_messages,
     build_tool_selector,
+    request_has_explicit_calculation,
 )
 from backend.app.agent.tools import AGENT_TOOLS, handle_tool_error
 from backend.app.agent.validation import (
     MAX_REVISION_ATTEMPTS,
     DocumentValidator,
     ReviewError,
+    ValidationReport,
     build_document_validator,
+    review_unavailable_issue,
+    validate_document_structure,
 )
 from backend.app.services.llm import MissingDeepSeekApiKeyError
 
@@ -99,11 +104,24 @@ def route_after_prepare(state: AgentState) -> Literal["plan_document", "reject"]
     return "reject" if state.get("status") == "rejected" else "plan_document"
 
 
+def _plan_requires_tool_selection(state: AgentState) -> bool:
+    plan = state.get("plan")
+    if plan is None:
+        return False
+    if any(
+        task.stage is ExecutionStage.TOOL_EXECUTION for task in plan.execution_tasks
+    ):
+        return True
+    return request_has_explicit_calculation(state.get("normalized_request", ""))
+
+
 def route_after_planning(
     state: AgentState,
-) -> Literal["select_tools", "planning_failed"]:
-    """Route based on whether a validated plan was produced."""
-    return "select_tools" if state.get("plan") is not None else "planning_failed"
+) -> Literal["select_tools", "write_document", "planning_failed"]:
+    """Route based on plan validity and whether tools are actually needed."""
+    if state.get("plan") is None:
+        return "planning_failed"
+    return "select_tools" if _plan_requires_tool_selection(state) else "write_document"
 
 
 def _last_ai_message(messages: list[BaseMessage]) -> AIMessage | None:
@@ -269,13 +287,40 @@ def finalize(state: AgentState) -> dict[str, Any]:
     }
 
 
+def _validation_notes(report: Any) -> str:
+    if report is None:
+        return ""
+    warnings = list(getattr(report, "warnings", []))
+    informational = list(getattr(report, "informational", []))
+    if not warnings and not informational:
+        return ""
+    codes: list[str] = []
+    for issue in [*warnings, *informational]:
+        code = str(getattr(issue, "code", "")).strip()
+        if code and code not in codes:
+            codes.append(code)
+    parts: list[str] = []
+    if warnings:
+        parts.append(f"{len(warnings)} non-blocking warning(s)")
+    if informational:
+        parts.append(f"{len(informational)} informational note(s)")
+    text = "Validation notes: " + " and ".join(parts)
+    if codes:
+        text += f" ({', '.join(codes[:5])}{'...' if len(codes) > 5 else ''})"
+    return text
+
+
 def final_response(state: AgentState) -> dict[str, Any]:
     """Produce the single deterministic user-facing response for any outcome."""
     reason = state.get("terminal_reason")
     if reason == "completed":
         filename = state.get("output_filename", "")
         if filename:
-            return {"final_response": f"Document generated successfully: {filename}"}
+            response = f"Document generated successfully: {filename}"
+            notes = _validation_notes(state.get("validation_report"))
+            if notes:
+                response = f"{response}\n\n{notes}"
+            return {"final_response": response}
         return {"final_response": GENERIC_FAILURE_RESPONSE}
 
     return {
@@ -392,26 +437,39 @@ def build_agent_graph(
                 "status": "failed",
             }
 
+        review_unavailable = False
         try:
             active_validator = validator or build_document_validator()
+        except MissingDeepSeekApiKeyError:
+            active_validator = DocumentValidator()
+            review_unavailable = True
+
+        try:
             report = await active_validator.validate(
                 state.get("normalized_request", ""),
                 plan,
                 content,
                 _extract_tool_results(state.get("messages", [])),
             )
-        except (ReviewError, MissingDeepSeekApiKeyError) as exc:
-            return {
-                "validation_report": None,
-                "document_error": str(exc),
-                "status": "failed",
-            }
+        except ReviewError:
+            report = ValidationReport(
+                issues=[
+                    *validate_document_structure(content, plan),
+                    review_unavailable_issue(),
+                ]
+            )
+            review_unavailable = False
         except Exception:
             return {
                 "validation_report": None,
                 "document_error": "The document could not be validated.",
                 "status": "failed",
             }
+
+        if review_unavailable:
+            report = ValidationReport(
+                issues=[*report.issues, review_unavailable_issue()]
+            )
 
         return {
             "validation_report": report,
@@ -536,6 +594,7 @@ def build_agent_graph(
         route_after_planning,
         {
             "select_tools": "select_tools",
+            "write_document": "write_document",
             "planning_failed": "planning_failed",
         },
     )

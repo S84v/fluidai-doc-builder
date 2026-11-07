@@ -113,7 +113,8 @@ async def test_live_review_detects_and_revision_corrects_contradiction() -> None
         pytest.skip("Inconclusive: DEEPSEEK_API_KEY is not configured")
 
     request = (
-        "Create a short business report. The approved budget is 10,000 USD. "
+        "Create a short business report for the Atlas project. "
+        "The approved budget is 10,000 USD. "
         "The timeline is four weeks."
     )
     plan = _plan()

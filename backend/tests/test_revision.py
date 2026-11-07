@@ -153,7 +153,7 @@ def test_revision_rejects_wrong_document_type() -> None:
         )
 
 
-def test_revision_rejects_changed_section_order() -> None:
+def test_revision_allows_changed_section_order() -> None:
     plan = _plan()
     reversed_content = DocumentContent(
         document_type=plan.document_type,
@@ -165,15 +165,19 @@ def test_revision_rejects_changed_section_order() -> None:
     )
     writer = DocumentWriter(FakeStructuredModel(reversed_content))
 
-    with pytest.raises(ContentGenerationError, match="approved plan order"):
-        asyncio_run(
-            writer.revise(
-                "Create the report",
-                plan,
-                _content(plan),
-                [_blocking_issue()],
-            )
+    revised = asyncio_run(
+        writer.revise(
+            "Create the report",
+            plan,
+            _content(plan),
+            [_blocking_issue()],
         )
+    )
+
+    assert [section.heading for section in revised.sections] == [
+        "Findings",
+        "Overview",
+    ]
 
 
 def test_revision_requires_blocking_issues_without_calling_model() -> None:
@@ -263,6 +267,10 @@ def test_revision_prompt_preserves_factuality_and_placeholders() -> None:
     assert "Do not add filler paragraphs" in system_prompt
     assert "keep factual accuracy ahead of completeness" in system_prompt
     assert "An empty section body is acceptable" in system_prompt
+    normalized = " ".join(system_prompt.split())
+    assert "Use each placeholder only in the section where it is declared" in normalized
+    assert "do not import a placeholder from another section" in normalized
+    assert "preserve or add relative phases" in normalized
 
 
 def asyncio_run(coroutine: Any) -> Any:

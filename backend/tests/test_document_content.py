@@ -193,6 +193,9 @@ def test_writing_prompt_prioritises_accuracy_over_filling_sections() -> None:
     assert "use only a justified placeholder" in prompt
     assert "no paragraph or bullet when its information is fully" in prompt
     assert "structured fields" in prompt
+    assert "Use each placeholder only in the section where it is declared" in prompt
+    assert "relative phases, durations or sequencing" in prompt
+    assert "do not invent calendar dates or undeclared date placeholders" in prompt
 
 
 async def test_writer_uses_json_mode_structured_output() -> None:
@@ -221,7 +224,7 @@ async def test_writer_preserves_plan_section_order() -> None:
     ]
 
 
-async def test_writer_rejects_section_order_mismatch() -> None:
+async def test_writer_allows_section_order_mismatch() -> None:
     plan = _plan()
     reversed_content = DocumentContent(
         document_type=plan.document_type,
@@ -233,8 +236,12 @@ async def test_writer_rejects_section_order_mismatch() -> None:
     )
     writer = DocumentWriter(FakeStructuredModel(reversed_content))
 
-    with pytest.raises(ContentGenerationError, match="approved plan order"):
-        await writer.generate("Create the report", plan)
+    result = await writer.generate("Create the report", plan)
+
+    assert [section.heading for section in result.sections] == [
+        "Risks",
+        "Overview",
+    ]
 
 
 async def test_writer_rejects_document_type_mismatch() -> None:

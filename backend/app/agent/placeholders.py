@@ -10,6 +10,12 @@ from backend.app.agent.models import DocumentPlan
 
 PLACEHOLDER_RE = re.compile(r"\[[^\[\]]+\]")
 
+UNKNOWN_PLACEHOLDER_REASON = "This placeholder was not declared in the approved plan."
+AMBIGUOUS_PLACEHOLDER_REASON = (
+    "This placeholder is declared in the approved plan; multiple section-specific "
+    "explanations exist."
+)
+
 TEMPLATE_PLACEHOLDER_REASONS: dict[str, str] = {
     "[Audience]": "The intended audience was not provided in the request.",
     "[Date]": (
@@ -67,11 +73,11 @@ def _plan_placeholder_reasons(
 
 
 def _all_plan_placeholder_reasons(plan: DocumentPlan | None) -> dict[str, set[str]]:
-    """Return all declared reasons for placeholders used in table fields.
+    """Return every declared plan reason for each placeholder text.
 
-    Structured table cells are not tied to one prose section. A custom
-    placeholder may be used there only when it has one distinct declared reason
-    across the plan. Template placeholders take precedence where both exist.
+    A placeholder declared in any section may be reused in prose or structured
+    table fields. When one distinct reason exists it is reused; multiple
+    section-specific reasons fall back to a generic explanation.
     """
     reasons: dict[str, set[str]] = {}
     if plan is None:
@@ -87,15 +93,18 @@ def _reason_for_prose(
     section_heading: str,
     location: str,
     plan_reasons: dict[str, dict[str, str]],
+    global_plan_reasons: dict[str, set[str]],
 ) -> str:
     section_reasons = plan_reasons.get(_normalize_heading(section_heading), {})
     reason = section_reasons.get(text)
     if reason is not None:
         return reason
-    raise PlaceholderVerificationError(
-        f"Placeholder {text} at {location} has no explanation for "
-        f"section {section_heading}."
-    )
+    declared_reasons = global_plan_reasons.get(text)
+    if declared_reasons:
+        if len(declared_reasons) == 1:
+            return next(iter(declared_reasons))
+        return AMBIGUOUS_PLACEHOLDER_REASON
+    return UNKNOWN_PLACEHOLDER_REASON
 
 
 def _reason_for_template(
@@ -108,14 +117,9 @@ def _reason_for_template(
         return reason
     declared_reasons = plan_reasons.get(text)
     if not declared_reasons:
-        raise PlaceholderVerificationError(
-            f"Placeholder {text} at {location} has no matching explanation."
-        )
+        return UNKNOWN_PLACEHOLDER_REASON
     if len(declared_reasons) > 1:
-        raise PlaceholderVerificationError(
-            f"Placeholder {text} at {location} has multiple different plan "
-            "explanations and cannot be attributed to one section."
-        )
+        return AMBIGUOUS_PLACEHOLDER_REASON
     return next(iter(declared_reasons))
 
 
@@ -124,6 +128,7 @@ def _collect_prose(
     section_heading: str,
     location: str,
     plan_reasons: dict[str, dict[str, str]],
+    global_plan_reasons: dict[str, set[str]],
     records: list[RenderedPlaceholder],
 ) -> None:
     for placeholder in PLACEHOLDER_RE.findall(text):
@@ -136,6 +141,7 @@ def _collect_prose(
                     section_heading,
                     location,
                     plan_reasons,
+                    global_plan_reasons,
                 ),
             )
         )
@@ -258,7 +264,12 @@ def collect_rendered_placeholders(
     document: Document,
     plan: DocumentPlan | None,
 ) -> list[RenderedPlaceholder]:
-    """Scan the actual DOCX and require an explanation for every placeholder."""
+    """Scan the actual DOCX and explain every rendered placeholder.
+
+    Declared plan placeholders reuse their reason, ambiguous declarations get a
+    generic explanation, and undeclared placeholders remain transparent instead
+    of blocking document generation.
+    """
     records: list[RenderedPlaceholder] = []
     plan_reasons = _plan_placeholder_reasons(plan)
     structured_plan_reasons = _all_plan_placeholder_reasons(plan)
@@ -272,6 +283,7 @@ def collect_rendered_placeholders(
             current_heading,
             f"Section '{current_heading}', paragraph {index}",
             plan_reasons,
+            structured_plan_reasons,
             records,
         )
 

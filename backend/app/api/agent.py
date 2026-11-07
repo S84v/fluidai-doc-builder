@@ -145,9 +145,16 @@ async def stream_agent_events(
 
             if is_start:
                 if stage is ExecutionStage.DOCUMENT_WRITING:
-                    skipped = tracker.skip_stage(ExecutionStage.TOOL_EXECUTION)
-                    if skipped is not None:
-                        yield _sse_event("progress", skipped)
+                    skipped_selection = tracker.skip_stage(
+                        ExecutionStage.TOOL_SELECTION
+                    )
+                    if skipped_selection is not None:
+                        yield _sse_event("progress", skipped_selection)
+                    skipped_execution = tracker.skip_stage(
+                        ExecutionStage.TOOL_EXECUTION
+                    )
+                    if skipped_execution is not None:
+                        yield _sse_event("progress", skipped_execution)
                 elif stage is ExecutionStage.DOCX_GENERATION:
                     skipped = tracker.skip_stage(ExecutionStage.REVISION)
                     if skipped is not None:

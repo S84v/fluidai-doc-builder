@@ -207,7 +207,7 @@ async def test_state_is_isolated_between_invocations(
     fake_validator: Any,
 ) -> None:
     first = await run_agent(
-        "first request",
+        "What is 1 + 1?",
         planner=EchoPlanner(),
         tool_selector=FakeToolSelector(AIMessage(content="first answer")),
         writer=fake_writer,
@@ -215,7 +215,7 @@ async def test_state_is_isolated_between_invocations(
         validator=fake_validator,
     )
     second = await run_agent(
-        "second request",
+        "What is 2 + 2?",
         planner=EchoPlanner(),
         tool_selector=FakeToolSelector(AIMessage(content="second answer")),
         writer=fake_writer,
@@ -226,8 +226,8 @@ async def test_state_is_isolated_between_invocations(
     assert first is not second
     assert first["plan"] is not None
     assert second["plan"] is not None
-    assert first["plan"].title == "first request"
-    assert second["plan"].title == "second request"
+    assert first["plan"].title == "What is 1 + 1?"
+    assert second["plan"].title == "What is 2 + 2?"
     assert first["content"] is not None
     assert second["content"] is not None
     assert first["content"] is not second["content"]
@@ -236,7 +236,7 @@ async def test_state_is_isolated_between_invocations(
     first["validation_errors"].append("mutated")
     first["messages"].append(AIMessage(content="mutated"))
 
-    assert second["plan"].title == "second request"
+    assert second["plan"].title == "What is 2 + 2?"
     assert second["validation_errors"] == []
     assert len(second["messages"]) == 3
 

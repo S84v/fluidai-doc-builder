@@ -34,7 +34,6 @@ from backend.app.agent.graph import (
     DOCUMENT_FAILURE_RESPONSE,
     PLANNING_FAILURE_RESPONSE,
     REJECTION_RESPONSE,
-    REVIEW_FAILURE_RESPONSE,
     REVISION_FAILURE_RESPONSE,
     TOOL_FAILURE_RESPONSE,
     VALIDATION_FAILURE_RESPONSE,
@@ -501,7 +500,7 @@ async def test_tool_selection_failure_never_generates_document() -> None:
     plan, content = _case(DocumentType.BUSINESS_REPORT)
     docx = RecordingDocx()
     result = await run_agent(
-        "Create a report",
+        "What is 17 * 23?",
         planner=StaticPlanner(plan),
         tool_selector=FailingSelector(),
         writer=StaticWriter(content),
@@ -538,7 +537,7 @@ async def test_tool_execution_failure_never_generates_document() -> None:
     plan, content = _case(DocumentType.BUSINESS_REPORT)
     docx = RecordingDocx()
     result = await run_agent(
-        "Create a report",
+        "What is 17 * 23?",
         planner=StaticPlanner(plan),
         tool_selector=TwoStepSelector(),
         writer=StaticWriter(content),
@@ -571,7 +570,7 @@ async def test_content_generation_failure_never_generates_document() -> None:
     assert docx.calls == 0
 
 
-async def test_review_failure_never_generates_document() -> None:
+async def test_review_failure_generates_document_with_warning() -> None:
     plan, content = _case(DocumentType.BUSINESS_REPORT)
     docx = RecordingDocx()
     result = await run_agent(
@@ -583,9 +582,10 @@ async def test_review_failure_never_generates_document() -> None:
         validator=RaisingValidator(ReviewError("review failed")),
     )
 
-    assert result["status"] == "failed"
-    assert result["final_response"] == REVIEW_FAILURE_RESPONSE
-    assert docx.calls == 0
+    assert result["status"] == "completed"
+    assert docx.calls == 1
+    assert "Document generated successfully" in result["final_response"]
+    assert "review_unavailable" in result["final_response"]
 
 
 def _blocking_report() -> ValidationReport:

@@ -18,7 +18,6 @@ from backend.app.agent import (
     run_agent,
 )
 from backend.app.agent.graph import (
-    REVIEW_FAILURE_RESPONSE,
     REVISION_FAILURE_RESPONSE,
     VALIDATION_FAILURE_RESPONSE,
 )
@@ -203,6 +202,10 @@ async def test_warnings_alone_do_not_trigger_revision() -> None:
     assert result["status"] == "completed"
     assert result["revision_count"] == 0
     assert writer.revise_calls == []
+    assert "Document generated successfully" in result["final_response"]
+    assert "Validation notes:" in result["final_response"]
+    assert "1 non-blocking warning(s)" in result["final_response"]
+    assert "style_warning" in result["final_response"]
 
 
 async def test_blocking_issue_revises_then_generates_docx() -> None:
@@ -238,16 +241,20 @@ async def test_revision_budget_is_bounded_and_blocks_docx() -> None:
     assert result["output_filename"] == ""
 
 
-async def test_review_failure_routes_to_safe_failure() -> None:
+async def test_review_failure_generates_with_warning() -> None:
     validator = RaisingValidator(ReviewError("review unavailable"))
     docx = RecordingDocx()
 
     result = await _run(validator=validator, docx_generator=docx)
 
-    assert result["status"] == "failed"
-    assert result["final_response"] == REVIEW_FAILURE_RESPONSE
-    assert result["validation_report"] is None
-    assert docx.calls == 0
+    assert result["status"] == "completed"
+    assert result["validation_report"] is not None
+    assert any(
+        issue.code == "review_unavailable"
+        for issue in result["validation_report"].warnings
+    )
+    assert docx.calls == 1
+    assert "review_unavailable" in result["final_response"]
 
 
 async def test_revision_failure_routes_to_safe_failure() -> None:
@@ -272,4 +279,4 @@ async def test_validation_state_is_request_local() -> None:
     assert first["messages"] is not second["messages"]
 
     first["messages"].append(AIMessage(content="mutated"))
-    assert len(second["messages"]) == 3
+    assert len(second["messages"]) == 0

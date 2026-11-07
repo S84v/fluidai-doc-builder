@@ -20,10 +20,61 @@ MAX_REVISION_ATTEMPTS = 2
 _PLACEHOLDER_RE = re.compile(r"\[[^\[\]]+\]")
 _EMPTY_PLACEHOLDER_RE = re.compile(r"\[\s*\]")
 
+_CRITICAL_REVIEWER_TERMS = (
+    "unsupported",
+    "invent",
+    "fabricat",
+    "contradict",
+    "assumption_as_confirmed",
+    "presented_as_confirmed",
+    "presented_as_assigned",
+    "materially change",
+    "wrong_document_type",
+    "empty_document",
+    "structurally unusable",
+    "malformed",
+)
+_WARNING_REVIEWER_TERMS = (
+    "incomplete",
+    "missing",
+    "partial",
+    "optional",
+    "timeline",
+    "duration",
+    "phase",
+    "milestone",
+    "responsib",
+    "owner",
+    "ownership",
+    "assign",
+    "dependency",
+    "risk",
+    "scope",
+    "success",
+    "approach",
+    "deliverable",
+    "quality",
+    "recommendation",
+    "placeholder",
+    "assumption",
+    "govern",
+    "raci",
+    "change_management",
+    "stabilisation",
+    "accelerat",
+    "budget",
+    "misclassified",
+    "not_stated",
+    "not_defined",
+    "not_listed",
+    "not_provided",
+)
+
 
 class IssueSeverity(StrEnum):
     BLOCKING = "blocking"
     WARNING = "warning"
+    INFO = "info"
 
 
 class ValidationIssue(BaseModel):
@@ -56,6 +107,10 @@ class ValidationReport(BaseModel):
         return [
             issue for issue in self.issues if issue.severity is IssueSeverity.WARNING
         ]
+
+    @property
+    def informational(self) -> list[ValidationIssue]:
+        return [issue for issue in self.issues if issue.severity is IssueSeverity.INFO]
 
     @computed_field
     @property
@@ -158,8 +213,8 @@ def validate_document_structure(
             _issue(
                 "section_structure_mismatch",
                 "Generated section headings do not match the approved plan order.",
-                IssueSeverity.BLOCKING,
-                suggestion="Restore the approved section headings and ordering.",
+                IssueSeverity.WARNING,
+                suggestion="Keep the useful content and warn about plan divergence.",
             )
         )
 
@@ -400,41 +455,28 @@ def validate_document_structure(
                     )
 
     text_values = list(_iter_strings(content.model_dump()))
-    plan_sections_by_heading = {
-        _normalize_heading(section.heading): section for section in plan.sections
-    }
-    for section in content.sections:
-        plan_section = plan_sections_by_heading.get(_normalize_heading(section.heading))
-        declared_placeholders = (
-            {placeholder.text for placeholder in plan_section.placeholders}
-            if plan_section is not None
-            else set()
-        )
-        for text in [*section.paragraphs, *section.bullets]:
-            for placeholder in _PLACEHOLDER_RE.findall(text):
-                if placeholder not in declared_placeholders:
-                    issues.append(
-                        _issue(
-                            "unexplained_placeholder",
-                            f"Placeholder {placeholder} is not declared for "
-                            f"section {section.heading}.",
-                            IssueSeverity.BLOCKING,
-                            section=section.heading,
-                            suggestion=(
-                                "Declare this placeholder for this section in "
-                                "the plan or remove the unexplained placeholder."
-                            ),
-                        )
-                    )
-
-    # Custom plan placeholders are only accepted in actual structured content
-    # fields that render in document tables. Unrelated title/metadata fields may
-    # use deterministic template placeholders only.
     all_declared_placeholders = {
         placeholder.text
         for plan_section in plan.sections
         for placeholder in plan_section.placeholders
     }
+    for section in content.sections:
+        for text in [*section.paragraphs, *section.bullets]:
+            for placeholder in _PLACEHOLDER_RE.findall(text):
+                if placeholder not in all_declared_placeholders:
+                    issues.append(
+                        _issue(
+                            "unexplained_placeholder",
+                            f"Placeholder {placeholder} is not declared in the "
+                            "approved plan.",
+                            IssueSeverity.WARNING,
+                            section=section.heading,
+                            suggestion=(
+                                "Keep it as a transparent placeholder or replace "
+                                "it with supported content."
+                            ),
+                        )
+                    )
     structured_values = content.model_dump(
         include={
             "meeting",
@@ -459,11 +501,10 @@ def validate_document_structure(
                 _issue(
                     "unexplained_placeholder",
                     f"Placeholder {placeholder} is not declared in the approved plan.",
-                    IssueSeverity.BLOCKING,
+                    IssueSeverity.WARNING,
                     suggestion=(
-                        "Declare this placeholder in the plan, use a known "
-                        "template placeholder, or replace it with supported "
-                        "content."
+                        "Keep it as a transparent placeholder or replace it with "
+                        "supported content."
                     ),
                 )
             )
@@ -487,7 +528,7 @@ def validate_document_structure(
                 _issue(
                     "unexplained_placeholder",
                     f"Placeholder {placeholder} is not valid in document metadata.",
-                    IssueSeverity.BLOCKING,
+                    IssueSeverity.WARNING,
                     suggestion=(
                         "Use a deterministic metadata placeholder such as "
                         "[Audience], [Date] or [Version], or remove it."
@@ -500,8 +541,8 @@ def validate_document_structure(
             _issue(
                 "unexplained_placeholder",
                 f"Placeholder {placeholder} is not valid in the document title.",
-                IssueSeverity.BLOCKING,
-                suggestion="Use a literal title or remove the placeholder.",
+                IssueSeverity.WARNING,
+                suggestion="Use a literal title or keep the placeholder transparent.",
             )
         )
 
@@ -561,15 +602,46 @@ Evidence rules:
 - Distinguish factual claims from proposed recommendations and clearly labelled
   assumptions.
 - Do not penalize legitimate placeholders for missing information.
+- A placeholder declared anywhere in the approved plan may be reused in any
+  section. An undeclared bracketed placeholder is a transparent warning unless
+  it replaces a required fact with invented content.
+- Clearly labelled assumptions and disclosed unknowns are not fabricated facts.
+
+Severity policy:
+- Use blocking severity only for material integrity failures: fabricated names,
+  organisations, people, dates, figures, commitments, decisions, policies,
+  targets or technical specifications presented as confirmed facts; unsupported
+  factual claims; material contradictions with explicitly supplied facts;
+  serious internal contradictions that materially change meaning; wrong
+  document type; empty or structurally unusable output.
+- Use warning severity for incomplete timelines, durations, phases or milestones;
+  missing owner identities or partially specified responsibilities; unresolved
+  but transparently disclosed conflicts; missing non-critical information;
+  optional or partially completed sections; missing technical component detail
+  when useful architecture content exists; placeholder consistency or
+  completeness issues; and quality or completeness recommendations.
+- Use info severity for optional omissions and non-essential suggestions.
+- When the request asks for a practical phased rollout but calendar dates are
+  unavailable, a relative indicative schedule with phases, durations,
+  dependencies, milestones and clearly labelled assumptions is meaningful
+  timeline coverage. Do not block solely because calendar dates are missing.
 - Do not penalize an empty section body when its information is fully represented
   by populated structured fields or when optional content is intentionally omitted.
-- Use blocking severity only for material problems that should prevent delivery.
-- Use warning severity for non-blocking improvements.
 """
 
 
 class ReviewError(RuntimeError):
     """Raised when the LLM review cannot produce valid structured output."""
+
+
+def review_unavailable_issue() -> ValidationIssue:
+    """Return the non-blocking warning used when automated review is unavailable."""
+    return _issue(
+        "review_unavailable",
+        "Automated review was unavailable; deterministic checks passed.",
+        IssueSeverity.WARNING,
+        suggestion="Review the document manually if factual assurance is required.",
+    )
 
 
 class DocumentReviewer:
@@ -646,6 +718,35 @@ def build_review_messages(
     ]
 
 
+def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
+    normalized = text.casefold()
+    return any(term in normalized for term in terms)
+
+
+def normalize_reviewer_severity(
+    issues: list[ValidationIssue],
+) -> list[ValidationIssue]:
+    """Normalize reviewer severity using the critical/warning policy.
+
+    Critical factual integrity terms always block. Clear quality/completeness
+    findings are warnings. Unknown blocking codes stay blocking to avoid
+    silently weakening an unrecognized safety check.
+    """
+    normalized: list[ValidationIssue] = []
+    for issue in issues:
+        text = f"{issue.code} {issue.message}".casefold()
+        if _contains_any(text, _CRITICAL_REVIEWER_TERMS):
+            adjusted = issue.model_copy(update={"severity": IssueSeverity.BLOCKING})
+        elif issue.severity is IssueSeverity.BLOCKING and _contains_any(
+            text, _WARNING_REVIEWER_TERMS
+        ):
+            adjusted = issue.model_copy(update={"severity": IssueSeverity.WARNING})
+        else:
+            adjusted = issue
+        normalized.append(adjusted)
+    return normalized
+
+
 class DocumentValidator:
     """Run deterministic checks and, when needed, LLM review."""
 
@@ -664,8 +765,19 @@ class DocumentValidator:
         if deterministic_report.blocking_issues or self._reviewer is None:
             return deterministic_report
 
-        review = await self._reviewer.review(request, plan, content, tool_results)
-        return ValidationReport(issues=[*issues, *review.issues])
+        try:
+            review = await self._reviewer.review(
+                request,
+                plan,
+                content,
+                tool_results,
+            )
+        except ReviewError:
+            issues.append(review_unavailable_issue())
+            return ValidationReport(issues=issues)
+
+        review_issues = normalize_reviewer_severity(review.issues)
+        return ValidationReport(issues=[*issues, *review_issues])
 
 
 def build_document_reviewer(model: BaseChatModel | None = None) -> DocumentReviewer:

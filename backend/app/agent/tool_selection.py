@@ -1,5 +1,6 @@
 """Model-driven tool selection for the agent graph."""
 
+import re
 from collections.abc import Sequence
 
 from langchain_core.language_models import BaseChatModel
@@ -16,6 +17,24 @@ from backend.app.agent.tools import AGENT_TOOLS
 from backend.app.services.llm import build_chat_model
 
 MAX_TOOL_ROUNDS = 3
+
+_DATE_LIKE_RE = re.compile(r"\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b")
+_ARITHMETIC_RE = re.compile(
+    r"(?<![\w.])\d+(?:\.\d+)?\s*[+\-*/]\s*\(?\d+(?:\.\d+)?"
+    r"(?![\w]|\.[\w])"
+)
+
+
+def request_has_explicit_calculation(request: str) -> bool:
+    """Return True only for a clear numeric arithmetic expression.
+
+    ISO-like dates are removed first so a request such as "2026-11-06" does not
+    look like subtraction. This is intentionally a narrow fallback, not natural
+    language understanding.
+    """
+    text = _DATE_LIKE_RE.sub(" ", request)
+    return bool(_ARITHMETIC_RE.search(text))
+
 
 TOOL_SELECTION_PROMPT = """You are selecting tools for a document-generation \
 workflow. The available tool schemas are provided by the API.

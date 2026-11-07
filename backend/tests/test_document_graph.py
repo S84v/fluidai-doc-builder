@@ -227,7 +227,7 @@ async def test_document_state_is_request_local(
     assert second["document_error"] == ""
 
     first["messages"].append(AIMessage(content="mutated"))
-    assert len(second["messages"]) == 3
+    assert len(second["messages"]) == 0
 
 
 async def test_tool_message_content_only_is_extracted(

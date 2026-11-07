@@ -75,6 +75,12 @@ def _plan() -> DocumentPlan:
                 stage=ExecutionStage.DOCX_GENERATION,
             ),
             ExecutionTask(
+                id="select_tool",
+                title="Select a tool",
+                description="Decide whether a tool is required.",
+                stage=ExecutionStage.TOOL_SELECTION,
+            ),
+            ExecutionTask(
                 id="use_tool",
                 title="Use a tool",
                 description="Run a required tool.",
@@ -167,9 +173,16 @@ def test_optional_stage_skip_updates_planned_tasks() -> None:
     tracker = PlanProgressTracker()
     tracker.attach_plan(_plan())
 
-    skipped = tracker.skip_stage(ExecutionStage.TOOL_EXECUTION)
+    skipped_selection = tracker.skip_stage(ExecutionStage.TOOL_SELECTION)
+    skipped_execution = tracker.skip_stage(ExecutionStage.TOOL_EXECUTION)
 
-    assert skipped == {
+    assert skipped_selection == {
+        "stage": "tool_selection",
+        "task_ids": ["select_tool"],
+        "status": "skipped",
+        "message": "No tool selection was required.",
+    }
+    assert skipped_execution == {
         "stage": "tool_execution",
         "task_ids": ["use_tool"],
         "status": "skipped",

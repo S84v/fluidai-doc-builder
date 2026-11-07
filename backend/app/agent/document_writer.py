@@ -37,6 +37,9 @@ Rules:
 - Use explicit bracketed placeholders such as [Client Name] for unknown details.
 - Use only placeholder names declared in the approved plan. Do not invent new
   placeholder names or use placeholders for supplied facts.
+- Use each placeholder only in the section where it is declared. Do not reuse a
+  placeholder declared in another section; use the current section's own
+  placeholder, relative wording, or omit the unsupported detail.
 - When a required section has no user-supported content, use only a justified
   placeholder from the approved plan instead of inventing content.
 - Omit optional content when no useful user-supported information exists.
@@ -48,8 +51,10 @@ Rules:
 - Populate audience and metadata only when the request or plan provides them.
 - For meeting_minutes, populate meeting details and action_items only from
   explicitly supplied information.
-- For project_plan and business_proposal, populate milestones only when timeline
-  information is explicitly available.
+- For project_plan and business_proposal, populate milestones when the request
+  provides calendar dates or relative phases, durations or sequencing. When
+  calendar dates are unavailable, use relative timing (for example "Week 1-2")
+  and do not invent calendar dates or undeclared date placeholders.
 - For sop, populate sop_steps only from supplied procedure information.
 - For product_specification, populate requirements only from supplied requirements.
 - For technical_design, populate components only from supplied technical details.
@@ -82,6 +87,12 @@ Rules:
   structure; keep factual accuracy ahead of completeness.
 - An empty section body is acceptable when its information is fully represented
   by populated structured fields; do not add filler to it.
+- Use each placeholder only in the section where it is declared. When a blocking
+  issue identifies an undeclared placeholder, replace it with a placeholder
+  declared for that section, relative timing, or supported text; do not import a
+  placeholder from another section.
+- When calendar dates are unavailable, preserve or add relative phases,
+  durations, dependencies and milestones; do not invent calendar dates.
 - Use explicit bracketed placeholders only for still-unknown information declared
   in the approved plan.
 - Do not introduce internal reasoning, tool calls, or meta commentary.
@@ -287,10 +298,6 @@ def _coerce_content(
     return content
 
 
-def _normalize_heading(heading: str) -> str:
-    return " ".join(heading.split()).casefold()
-
-
 def _validate_content_against_plan(
     content: DocumentContent,
     plan: DocumentPlan,
@@ -298,15 +305,6 @@ def _validate_content_against_plan(
     if content.document_type != plan.document_type:
         raise ContentGenerationError(
             "Generated content does not match the approved document type."
-        )
-
-    content_headings = [
-        _normalize_heading(section.heading) for section in content.sections
-    ]
-    plan_headings = [_normalize_heading(section.heading) for section in plan.sections]
-    if content_headings != plan_headings:
-        raise ContentGenerationError(
-            "Generated sections do not match the approved plan order."
         )
 
 

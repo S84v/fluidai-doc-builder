@@ -46,6 +46,7 @@ STAGE_MESSAGES: dict[ExecutionStage, dict[str, str]] = {
     ExecutionStage.TOOL_SELECTION: {
         "active": "Selecting tools...",
         "completed": "Tool selection complete.",
+        "skipped": "No tool selection was required.",
         "failed": "Tool selection failed.",
     },
     ExecutionStage.TOOL_EXECUTION: {

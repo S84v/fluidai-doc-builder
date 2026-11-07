@@ -13,8 +13,30 @@ from backend.app.agent import (
     ToolSelector,
     build_tool_selector,
 )
-from backend.app.agent.tool_selection import build_tool_selection_messages
+from backend.app.agent.tool_selection import (
+    build_tool_selection_messages,
+    request_has_explicit_calculation,
+)
 from backend.tests.plan_factory import make_execution_tasks
+
+
+@pytest.mark.parametrize(
+    ("request_text", "expected"),
+    [
+        ("What is 17 * 23?", True),
+        ("Calculate 1/0", True),
+        ("Use the calculator tool to compute 17 * 23.", True),
+        ("Create meeting minutes dated 2026-11-06.", False),
+        ("The project starts on 2026-11-06.", False),
+        ("Summarise the plan.", False),
+        ("Three weeks of cleanup are required.", False),
+    ],
+)
+def test_explicit_calculation_fallback_is_narrow(
+    request_text: str,
+    expected: bool,
+) -> None:
+    assert request_has_explicit_calculation(request_text) is expected
 
 
 def _plan() -> DocumentPlan:
