@@ -48,9 +48,25 @@ Settings are loaded from the environment or a local `.env` file:
 ## API
 
 - `GET /health` — service health.
-- `POST /agent` — accepts `{"request": "..."}` and returns SSE progress,
-  final-response token and completion/error events.
+- `POST /agent` — accepts `{"request": "..."}` and returns SSE events.
 - `GET /documents/{filename}` — downloads a generated DOCX from `var/output/`.
+
+SSE events:
+
+- `plan` — curated execution plan with request-specific tasks, conflicts,
+  assumptions, missing information, clarification questions and planned
+  placeholders.
+- `progress` — task IDs, graph stage, status and authored progress message.
+- `metadata` — effective document date and version used for the generated DOCX.
+- `placeholders` — final placeholder inventory for the generated DOCX with
+  location and justification.
+- `token` — final user-facing response text.
+- `complete` — generated filename and relative download URL.
+- `error` — safe terminal failure message.
+
+Missing document dates default to the system date at generation; missing
+document versions default to `1.0`. Meeting dates and other task dates are never
+substituted with the document date.
 
 Stream a request locally with `curl -N`:
 
@@ -65,6 +81,7 @@ The completion event includes a relative download URL under `/documents/`.
 ## Layout
 
 ```text
-backend/       FastAPI application and tests
+backend/       FastAPI application, agent graph and tests
+frontend/      React, TypeScript and Vite interface
 var/output/    Generated DOCX files (gitignored)
 ```

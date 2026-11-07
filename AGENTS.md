@@ -106,10 +106,15 @@ Distinguish between:
 - Final user-facing response tokens.
 - Terminal completion or error events.
 
-Never stream internal reasoning, planning output, tool calls, raw tool results
-or document-generation content.
+Never stream internal reasoning, raw planning model output, tool calls, raw tool
+results, internal messages or document-generation content.
 
-Only stream user-facing text from the dedicated final-response node.
+A curated, validated `DocumentPlan` summary may be streamed through the
+dedicated `plan` event. Only sanitized plan fields, task definitions, conflicts,
+assumptions, missing information, clarification questions and explained
+placeholders may be exposed; never chain-of-thought or raw model output.
+
+Only stream user-facing response text from the dedicated final-response node.
 
 Use asynchronous execution and maintain a consistent event protocol.
 
