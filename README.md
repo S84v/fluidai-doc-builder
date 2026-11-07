@@ -35,13 +35,27 @@ deterministic validation and DOCX rendering.
 ## Architecture
 
 ```mermaid
-flowchart LR
-    UI[React + TypeScript UI] -->|POST /agent, SSE| API[FastAPI API]
-    API --> GRAPH[LangGraph workflow]
-    GRAPH <-->|plan, select tools, write, review| LLM[DeepSeek]
-    GRAPH --> TEMPLATES[python-docx templates]
-    TEMPLATES --> OUTPUT[var/output/*.docx]
-    API -->|GET /documents/:filename| OUTPUT
+flowchart TB
+    UI["React frontend"]
+    API["FastAPI API"]
+    AGENT["LangGraph agent"]
+    LLM["DeepSeek"]
+    DOCX["DOCX generation"]
+    STORE[("Generated files<br/>var/output/")]
+
+    UI -->|"POST /agent"| API
+    API -->|"run request"| AGENT
+    AGENT -->|"graph events"| API
+    AGENT -->|"prompts"| LLM
+    LLM -->|"model responses"| AGENT
+    AGENT -->|"validated content"| DOCX
+    DOCX -->|"write .docx"| STORE
+
+    API -->|"SSE stream"| UI
+
+    UI -->|"GET /documents/:filename"| API
+    STORE -->|"read .docx"| API
+    API -->|".docx download"| UI
 ```
 
 The browser sends one request to `POST /agent` and consumes the resulting SSE
